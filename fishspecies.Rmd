@@ -135,29 +135,35 @@ db.2Obl.sum <- db.2Obl.sum[-c(3, 4, 7)]
 # Stacked bar Facultative corallivores
 ggplot(db.2Fac.sum, aes(fill=Site, y=Biomass.kgha, x=reorder(Species, -Biomass.tot))) + 
     geom_bar(position="stack", stat="identity")+
-    scale_fill_manual(values = c("#b3dcff", "#a1c6e5", "#ffd989", "#E5C37B", "#e06060", "#c95656"))+
+    scale_fill_manual(values = c("#b3dcff", "#90b2ce", "#ffd989", "#ceaf6e", "#e06060", "#b44d4d"))+
     labs(y = expression(paste("Fish biomass (kg ", ha^-1,")")), x = "Species")+
     theme_economist()+
     theme(
-      axis.title.x = element_text(color="black", vjust=-2, size = 12),
-      axis.text.x=element_text(size=12, face = "bold", vjust=0.5, angle = -35, hjust=0),
-      axis.title.y = element_text(color="black" , vjust=4, size = 12),
-      axis.text.y=element_text(size=12, face = "bold", vjust=0.5)
+      axis.title.x = element_text(color="black", vjust=-2, size = 14),
+      axis.text.x=element_text(size=12, face = "bold.italic", vjust=0.5, angle = -35, hjust=0),
+      axis.title.y = element_text(color="black" , vjust=4, size = 14),
+      axis.text.y=element_text(size=12, face = "bold", vjust=0.5),
+      panel.background = element_rect(fill = "#FCFCFC"),
+      plot.background = element_rect(fill = "#FFFFFF"),
+      panel.grid.major = element_line(colour = "#797979", size = 0.3)
       )
 ggsave("Facultative corallivores.tiff", width = 23, height = 10, units = "cm", dpi=1200, compression = "lzw")
 
 # Stacked bar Obligate corallivores
 ggplot(db.2Obl.sum, aes(fill=Site, y=Biomass.kgha, x=reorder(Species, -Biomass.tot))) + 
     geom_bar(position="stack", stat="identity")+
-    scale_fill_manual(values = c("#b3dcff", "#a1c6e5", "#ffd989", "#E5C37B", "#e06060", "#c95656"))+
+    scale_fill_manual(values = c("#b3dcff", "#90b2ce", "#ffd989", "#ceaf6e", "#e06060", "#b44d4d"))+
     labs(y = expression(paste("Fish biomass (kg ", ha^-1,")")), x = "Species")+
     theme_economist()+
     theme(
-      axis.title.x = element_text(color="black", vjust=-2, size = 12),
-      axis.text.x=element_text(size=12, face = "bold", vjust=0.5, angle = -35, hjust=0),
-      axis.title.y = element_text(color="black" , vjust=4, size = 12),
+      axis.title.x = element_text(color="black", vjust=-2, size = 14),
+      axis.text.x=element_text(size=12, face = "bold.italic", vjust=0.5, angle = -35, hjust=0),
+      axis.title.y = element_text(color="black" , vjust=4, size = 14),
       axis.text.y=element_text(size=12, face = "bold", vjust=0.5),
-      plot.margin = unit(c(0.5,3.5,0.5,0.5), "cm")
+      plot.margin = unit(c(0.5,3.5,0.5,0.5), "cm"),
+      panel.background = element_rect(fill = "#FCFCFC"),
+      plot.background = element_rect(fill = "#FFFFFF"),
+      panel.grid.major = element_line(colour = "#797979", size = 0.3)
       )
 ggsave("Obligate corallivores.tiff", width = 23, height = 10, units = "cm", dpi=1200, compression = "lzw")
 

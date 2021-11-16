@@ -87,13 +87,17 @@ db.3Snail$Species <- factor(db.3Snail$Species, ordered = T, levels = c("Drupella
 ggplot(db.3Snail, aes(fill=Species, y=Density, x=Site)) + 
     geom_bar(position="stack", stat="identity")+
     scale_fill_manual(values = c( "#999999", "#323232"))+
-    labs(y = expression(paste("Snail density (", m^-2," coral)")), x = "Study site")+
+    labs(y = expression(paste("Snail density ( ", m^-2," coral)")), x = "Study site")+
     theme_economist()+
     theme(
-      axis.title.x = element_text(color="black", vjust=-2, size = 12),
+      axis.title.x = element_text(color="black", vjust=-2, size = 14),
       axis.text.x=element_text(size=12, face = "bold", vjust=0.5, hjust=0),
-      axis.title.y = element_text(color="black" , vjust=4, size = 12),
-      axis.text.y=element_text(size=12, face = "bold", vjust=0.5)
+      axis.title.y = element_text(color="black" , vjust=4, size = 14),
+      axis.text.y=element_text(size=12, face = "bold", vjust=0.5),
+      legend.text = element_text(size = 14, face = "bold.italic"),
+      panel.background = element_rect(fill = "#FCFCFC"),
+      plot.background = element_rect(fill = "#FFFFFF"),
+      panel.grid.major = element_line(colour = "#797979", size = 0.3)
       )
 ggsave("Snails.tiff", width = 23, height = 10, units = "cm", dpi=1200, compression = "lzw")
 
