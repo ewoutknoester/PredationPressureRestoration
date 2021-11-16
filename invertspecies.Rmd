@@ -1,0 +1,102 @@
+---
+title: "invertspecies"
+author: "Ewout Knoester"
+date: "16/11/2021"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+
+rm(list=ls()) # Clear workspace
+knitr::opts_knit$set(root.dir = '/tmp') #Set directory at current directory for all subsequent chunks
+options(scipen = 50) # Have all numbers in non-scientific notation
+
+library(plyr) # Join (vlookup)
+library(tidyverse) # Data manipulation and plotting
+library(readxl) # Import excel sheets
+library(htmlTable) # Data table
+library(ggthemes) # pretty plots
+
+```
+
+# Load & organize data
+<!--
+Data info:
+  Data collected by Nienke Klerks & Sofia Kolkman
+  Abundance of invertebrates for different transect widths:
+  >>> Corallivorous snails (1 x 20 m) = 20 m2
+  >>> Corallivorous sea starts (5 x 20 m) = 100 m2
+  
+-->
+
+```{r}
+
+# Load raw data
+db.0raw <- read_excel("Benthic surveys_DATABASE_04_Selection.xlsx", sheet = "Data")
+
+# Select relevant columns
+db.1clean <- db.0raw[c(3, 19, 39, 40, 44, 45)]
+db.1clean$Site <- as.factor(db.1clean$Site)
+
+# Convert abundances to densities
+db.2 <- as.data.frame(append(db.1clean, list(COTS.density = db.1clean$COTS.abundance / 100 * 10000, # /ha
+                                             Culcita.density = db.1clean$Culcita.abundance / 100 * 10000, # /ha
+                                             Coralliophila.density = db.1clean$Coralliophila.abundance / 20, # /m2
+                                             Drupella.density = db.1clean$Drupella.abundance / 20)))
+
+# Convert snail density per meter of reef (/m2) to density per meter of coral (/m2 coral)
+
+## Set minimum coral cover at 5% to prevent division by zero
+db.2$Hard.coral.pct <- ifelse(db.2$Hard.coral.pct < 5, 5, db.2$Hard.coral.pct)
+
+## Calculate densities
+db.2 <- as.data.frame(append(db.2,
+        list(Coralliophila.densitycoral = db.2$Coralliophila.density / (db.2$Hard.coral.pct/100), # /m2 coral
+             Drupella.densitycoral = db.2$Drupella.density / (db.2$Hard.coral.pct/100)))) # /m2 coral
+
+# Select relevant columns
+db.2 <- db.2[c(1, 7, 8, 11, 12)]
+
+# Average Densities per Site
+db.2avg <- db.2  %>%  
+  group_by(Site) %>% 
+  dplyr::summarise(COTS = mean(COTS.density, na.rm = TRUE),
+                   Culcita = mean(Culcita.density, na.rm = TRUE),
+                   Coralliophila = mean(Coralliophila.densitycoral, na.rm = TRUE),
+                   Drupella = mean(Drupella.densitycoral, na.rm = TRUE))
+
+# Sum of both corallivorous snails
+db.2avg <- as.data.frame(append(db.2avg, list(Snails = db.2avg$Coralliophila + db.2avg$Drupella)))
+
+# Wide to long
+db.2avg <- gather(db.2avg, Species, Density, COTS:Snails, factor_key=TRUE)
+
+# Select snails
+db.3Snail <- subset(db.2avg, Species == "Coralliophila" | Species == "Drupella" )
+
+# Order, so that Coralliophila comes first (at bottom in graph)
+db.3Snail$Species <- factor(db.3Snail$Species, ordered = T, levels = c("Drupella", "Coralliophila"))
+
+```
+
+# Plotting
+```{r plotting}
+
+# Stacked bar Corallivorous snails
+ggplot(db.3Snail, aes(fill=Species, y=Density, x=Site)) + 
+    geom_bar(position="stack", stat="identity")+
+    scale_fill_manual(values = c( "#999999", "#323232"))+
+    labs(y = expression(paste("Snail density (", m^-2," coral)")), x = "Study site")+
+    theme_economist()+
+    theme(
+      axis.title.x = element_text(color="black", vjust=-2, size = 12),
+      axis.text.x=element_text(size=12, face = "bold", vjust=0.5, hjust=0),
+      axis.title.y = element_text(color="black" , vjust=4, size = 12),
+      axis.text.y=element_text(size=12, face = "bold", vjust=0.5)
+      )
+ggsave("Snails.tiff", width = 23, height = 10, units = "cm", dpi=1200, compression = "lzw")
+
+```
+
+
