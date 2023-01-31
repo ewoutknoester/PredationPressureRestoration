@@ -1,0 +1,528 @@
+---
+title: "Correlations"
+author: "Ewout Knoester"
+date: "10/03/2022"
+output: html_document
+---
+
+# Setup
+```{r setup, include=FALSE}
+
+rm(list=ls()) # Clear workspace
+knitr::opts_knit$set(root.dir = '/tmp') #Set directory at current directory for all subsequent chunks
+options(scipen = 50) # Have all numbers in non-scientific notation
+
+library(car) # ANOVA results GLM
+library(data.table) # means multiple columns by factor
+library(DHARMa) # glm model validation
+library(emmeans) # Post hoccing
+library(flextable) # Layout table
+library(ggpubr) # Arrange plots
+library(ggthemes) # pretty plots
+library(glmmTMB) # Nested beta regression
+library(NCmisc) # Check packages used
+library(nlme) # GLS
+library(officer) # Move table into word
+library(plyr) # Data summary
+library(readxl) # Import excel sheets
+library(tidyverse) # Data manipulation and plotting
+library(writexl) # Export Excels
+
+# Function to facilitate averaging dataset
+data_summary <- function(data, varname, groupnames){
+  require(plyr)
+  summary_func <- function(x, col){
+    c(mean = mean(x[[col]], na.rm=TRUE),
+      sd = sd(x[[col]], na.rm=TRUE),
+      n  = length(x[[col]]),
+      se = sd(x[[col]], na.rm=TRUE)/sqrt(length(x[[col]])))
+  }
+  data_sum<-ddply(data, groupnames, .fun=summary_func,
+                  varname)
+  data_sum <- plyr::rename(data_sum, c("mean" = varname))
+ return(data_sum)
+}
+```
+
+# Data selection (preparing dataset for archiving & sharing)
+
+```{r data selection}
+
+# CORAL PERFORMANCE
+## Load raw data
+coral0.raw <- read_excel("Raw data/Coral growth - experiments_2022-04_Corallivory.xlsx", sheet = 1)
+
+## Select relevant columns
+coral1.selex <- coral0.raw[c("Location", "Structure", "Species", "Date_0", "EV_0", "Date_1", "EV_1", "Condition_1", "Width1_0", "Width2_0", "Width1_1", "Width2_1")]
+
+## Calculate SGR (Specific Growth Rate)
+coral1.selex$SGR <- log(coral1.selex$EV_1/coral1.selex$EV_0)/as.numeric(as.Date(as.character(coral1.selex$Date_1), 
+                       format="%Y-%m-%d") - as.Date(as.character(coral1.selex$Date_0), format="%Y-%m-%d"))
+
+## Calculate surface area (average between start and end) to standardize bitemarks per m2 of coral
+coral1.selex$AREA.m2 <- ((pi*((coral1.selex$Width1_0 + coral1.selex$Width2_0)/400)^2) + (pi*((coral1.selex$Width1_1 + coral1.selex$Width2_1)/400)^2))/2
+
+# If fragment died, use start surface area only
+coral1.selex$AREA.m2 <- ifelse(is.na(coral1.selex$AREA.m2), pi*((coral1.selex$Width1_0 + coral1.selex$Width2_0)/400)^2, coral1.selex$AREA.m2)
+
+coral1.selex <- coral1.selex[-c(4:7, 9:12)]
+colnames(coral1.selex)[which(names(coral1.selex) == "Condition_1")] <- "Condition"
+
+## Change Location names into numbers
+coral1.selex$Location <- as.factor(ifelse(coral1.selex$Location  == 'Firefly', 1,
+                  ifelse(coral1.selex$Location  == 'Pilli Pipa', 2, 
+                   ifelse(coral1.selex$Location  == 'Lower Mpunguti', 3, 
+                    ifelse(coral1.selex$Location  == 'Dolphin Point', 4, 
+                     ifelse(coral1.selex$Location  == 'Wasini', 6, 5))))))
+
+# Standardize order (before merging)
+coral1.selex <- coral1.selex[order(coral1.selex$Species),]
+coral1.selex <- coral1.selex[order(coral1.selex$Structure),]
+coral1.selex <- coral1.selex[order(coral1.selex$Location),]
+
+# BITEMARKS
+## Load raw data
+bm.raw <- read_excel("Raw data/Predation marks artificial_03_Selection.xlsx", sheet = 4)
+
+bm.selex <- bm.raw[c(1, 2, 3, 7, 13, 19, 25, 31, 32)]
+colnames(bm.selex) <- c("Location", "Structure", "Species", "Bitemarks_1", "Bitemarks_2", "Bitemarks_3", "Bitemarks_4", "Bitemarks_5", "Condition_bitemarks")
+
+# Calculate average number of bite marks over study period
+bm.selex$Bitemarks_avg <- rowMeans(bm.selex[ , c(4:8)], na.rm=TRUE)
+coral1.selex$Bitemarks_avg <- bm.selex$Bitemarks_avg
+
+# Use Condition scored using the bitemarks pictures instead of growth measurements, as image quality was better
+coral1.selex$Condition <- bm.selex$Condition_bitemarks
+
+## Export data selection
+write_xlsx(coral1.selex, "Coral performance_Predation pressure restoration.xlsx")
+
+```
+
+
+# Data cleaning 
+<!--
+Data info:
+  Data collected on coral fragments outplanted onto small cement disks, placed near the reef:
+    Live coral tissue percentage (Condition) determined at end of 3-month study
+    Specific Growth Rate (SGR) over 3 month time span
+    To calculate bite marks per m2 of coral:
+      Projected surface area of each fragment: simplified coral shape seen from above to circle, calculate area of that circle
+      Bite marks were scored 5 times, every 2 weeks. Average number of bite marks of these 5 monitoring points is used
+-->
+
+```{r data cleaning}
+
+# Load raw data
+## BITEMARKS AND SURVIVAL 
+coral <- read_excel("Coral performance_Predation pressure restoration.xlsx")
+
+### Set variables as factors
+coral$Location <- as.factor(coral$Location)
+
+coral$Species <- as.factor(coral$Species)
+levels(coral$Species) <- c("Acropora", "Acropora", "Pocillopora", "Porites")
+
+### Add protection based on location
+coral$Protection <- as.factor(ifelse(coral$Location  == 1, "Fished",
+                  ifelse(coral$Location  == 2, "Fished", 
+                   ifelse(coral$Location  == 3, "Reserve", 
+                    ifelse(coral$Location  == 4, "Reserve", 
+                     ifelse(coral$Location  == 5, "No-take", "No-take"))))))
+coral$Protection <- factor(coral$Protection, ordered = TRUE, levels = c("Fished", "Reserve", "No-take"))
+
+### Calculate bitemarks standardized per surface area
+coral$Bitemarks.m2 <- coral$Bitemarks_avg/coral$AREA.m2
+
+## FISH
+facfish <- read_excel("Correlation data/Correlations_FacFish.xlsx", sheet = 1)
+oblfish <- read_excel("Correlation data/Correlations_OblFish.xlsx", sheet = 1)
+
+# CORAL COVER
+cover <- read_excel("Correlation data/Correlations_Coral cover.xlsx", sheet = 1)
+
+## GROWTH: calculated here, but not used for article:
+### Create subset for SGR where Condition > 80: only healthy corals will be used to determine SGR
+### NB the few surviving Porites at Wasini might skew a positive image here
+SGR <- subset(coral, Condition >= 80 | is.na(Condition))
+SGR.sum <- data_summary(SGR, varname = "SGR", groupnames = c("Protection", "Location", "Species"))
+
+ggplot(SGR.sum, aes(x = Location, y = SGR, fill = Protection))+
+  geom_bar(stat = "identity", position = position_dodge())+ 
+  facet_wrap(~ Species, scales="free_x")+
+  labs(y = expression(paste("SGR (", d^-1,")")))+
+  scale_y_continuous(limits = c (-0.005, 1.15*(max(SGR.sum$SGR) + max(SGR.sum$se))), breaks = waiver(), minor_breaks = waiver(), n.breaks = 2.6, expand = c(0,0))+
+  geom_errorbar(aes(ymin=ifelse(SGR - se < 0,SGR-(1*se), SGR-(1*se)), ymax=SGR+(1*se)), width=.2, position=position_dodge(.9))+
+  scale_x_discrete(expand = c(0, 0.7))+
+  theme_economist()+scale_colour_economist()+
+  theme(
+    panel.margin.y = unit(0, "cm"),
+    strip.text.x = element_text(size = 14, face = "bold", vjust = 2, margin = margin(0.2, 0, 0.1, 0, "cm")),
+    strip.background = element_blank(),
+    axis.title.x = element_text(color="black", vjust=-2, size = 14),
+    axis.text.x = element_text(angle = 0, size=12, face = "bold", vjust=0.5),
+    axis.title.y = element_text(color="black" , vjust=4, size = 14),
+    axis.text.y=element_text(size=12, face = "bold", vjust=0.4),
+    plot.margin = margin(t = 10, r = 40,  b = 25,  l = 20),
+    panel.background = element_rect(fill = "#FCFCFC"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    panel.grid.major = element_line(colour = "#797979", size = 0.3),
+    axis.ticks = element_blank()
+    )
+
+# Summaries
+Condition.sum <- data_summary(coral, varname = "Condition", groupnames = c("Protection", "Location", "Species"))
+
+Bitemarks.sum <- data_summary(coral, varname = "Bitemarks.m2", groupnames = c("Protection", "Location", "Species"))
+
+# Merging
+## Correlation data for figure
+Cor.fig <- cbind(Bitemarks.sum, Condition.sum)
+Cor.fig <- Cor.fig[order(Cor.fig$Species),]
+Cor.fig <- cbind(Cor.fig, facfish)
+Cor.fig <- cbind(Cor.fig, oblfish)
+Cor.fig <- Cor.fig[-c(5, 8:10, 12, 15:16, 20, 21:22, 26)]
+colnames(Cor.fig) <- c("Protection", "Location", "Species", "Bitemarks.m2", "BM.n", "BM.se", "Condition", "C.n", "C.se", "Facfish.kgha", "FF.n", "FF.se", "Oblfish.kgha", "OF.n", "OF.se")
+
+## Correlation data for correlation
+Cor.data <- Cor.fig[c(1:4, 7, 10, 13)]
+Cor.data.acr <- subset(Cor.data, Species == "Acropora")
+Cor.data.acr$Cover <- cover$Cover
+Cor.data.poc <- subset(Cor.data, Species == "Pocillopora")
+Cor.data.poc$Cover <- cover$Cover
+Cor.data.por <- subset(Cor.data, Species == "Porites")
+Cor.data.por$Cover <- cover$Cover
+
+# COMPARE BITEMARKS NATURAL AND ARTIFICIAL REEF
+BM <- read_excel("Correlation data/Bitemarks_Natural reef.xlsx")
+BM$'Bitemarks NR' <- paste(round(BM$Bitemarks.m2, 0), " (", BM$n, ")", sep = "")
+BM$'Bitemarks AR' <- paste(round(Cor.fig$Bitemarks.m2, 0), " (", Cor.fig$BM.n, ")", sep = "")
+BM$'Difference' <- round((Cor.fig$Bitemarks.m2/ BM$Bitemarks.m2), 0)
+BM <- select(BM, c('Genus', 'Location', 'Bitemarks NR', 'Bitemarks AR', 'Difference'))
+
+
+```
+
+### Beta selection
+```{r AVG survival: betareg model selection}
+
+# CONDITION
+## Data prep
+condition.beta <- coral[c("Protection", "Structure", "Location", "Species", "Condition")]
+condition.beta <- na.omit(condition.beta)
+
+## Transform survival (%) into fraction
+condition.beta <- condition.beta %>% dplyr::mutate(Condition.f = Condition/100)
+
+## Re-scale so there are no 0 and 1 in the dataset
+condition.beta <- condition.beta %>% 
+  dplyr::mutate(Condition.fc = (Condition.f * (length(Condition.f) - 1) + 0.5) / length(Condition.f))
+
+## Model
+bm2.l<- glmmTMB(Condition.fc ~ Location*Species + (1|Structure), data = condition.beta, 
+                 family = list(family = "beta", link = "logit"), REML = TRUE, dispformula = ~ Species+Location)
+## Outplut
+summary(bm2.l)
+car::Anova(bm2.l)
+
+# BITEMARKS
+## Data prep
+bitemarks.mod <- coral[c("Protection", "Structure", "Location", "Species", "Bitemarks.m2")]
+bitemarks.mod <- na.omit(bitemarks.mod)
+
+## Model
+bm.lme1  <- lme(sqrt(Bitemarks.m2) ~ Location*Species, random = ~1 | Structure,
+                data = bitemarks.mod, weights = varIdent(form = ~1 | Location))
+
+## Output
+car::Anova(bm.lme1)
+
+
+```
+## Model validation
+```{r AVG survival: model validation}
+
+# CONDITION
+mod <- bm2.l
+modOutput <- simulateResiduals(fittedModel = mod, plot = F)
+
+op <- par(mfrow = c(2, 3), mar = c(5, 4, 1, 2))
+plotResiduals(modOutput, quantreg = T, quantiles = 0.5, rank = T, smoothScatter = F)
+testDispersion(modOutput)
+testUniformity(modOutput)
+plotResiduals(modOutput, form = condition.beta$Species)
+plotResiduals(modOutput, form = condition.beta$Location)
+plotResiduals(modOutput, form = condition.beta$Protection)
+abline(0,0)
+plot(stats::fitted(mod) ~ condition.beta$Condition.fc)
+par(op)
+
+# BITEMARKS
+mod <- bm.lme1 # set model to be validated
+
+op <- par(mfrow = c(2, 3), mar = c(5, 4, 1, 2)) # set layout of figure frame
+plot(resid(mod, type = "pearson") ~ stats::fitted(mod)) # fitted vs residuals
+abline(0,0)
+hist(resid(mod, type = "pearson"), main = "") # histogram residuals
+qqnorm(resid(mod, type = "pearson")) # QQplot residuals
+plot(bitemarks.mod$Location, resid(mod, type = "pearson")) # residuals split over Date
+abline(0,0)
+plot(bitemarks.mod$Species, resid(mod, type = "pearson")) # residuals split over Date
+abline(0,0)
+plot(bitemarks.mod$Protection, resid(mod, type = "pearson")) # residuals split over Date
+abline(0,0)
+plot(stats::fitted(mod) ~ bitemarks.mod$Bitemarks.m2) # response data vs fitted
+par(op)
+
+```
+# Post hoc
+```{r post hoc}
+hsd.cond <- emmeans(bm2.l, specs = pairwise ~ Location|Species, adjust = "tukey")
+
+hsd.bm <- emmeans(bm.lme1, specs = pairwise ~ Location|Species, adjust = "tukey", type = "response")
+```
+
+# Correlations
+```{r correlations}
+cors.acr <- as.data.frame(correlation::correlation(Cor.data.acr, p_adjust = "none"))
+cors.poc <- as.data.frame(correlation::correlation(Cor.data.poc, p_adjust = "none"))
+cors.por <- as.data.frame(correlation::correlation(Cor.data.por, p_adjust = "none"))
+
+cors.all <- rbind(cors.acr, cors.poc, cors.por)
+cors.all$Species <- c("Acr", "Acr", "Acr", "Acr", "Acr", "Acr", "Acr", "Acr", "Acr", "Acr",
+                      "Poc", "Poc", "Poc", "Poc", "Poc", "Poc", "Poc", "Poc", "Poc", "Poc",
+                      "Por", "Por", "Por", "Por", "Por", "Por", "Por", "Por", "Por", "Por")
+cors.all$ID <- paste(cors.all$Species, cors.all$Parameter1, cors.acr$Parameter2, sep = "X")
+cors.all <- cors.all[c(13, 3, 9)]
+cors.all$r <- round(cors.all$r, 2)
+cors.all$p <- round(cors.all$p, 3)
+cors.all$star <- ifelse(cors.all$p <= 0.001, "***",
+  ifelse(cors.all$p <= 0.01, "**", 
+    ifelse(cors.all$p <= 0.05, "*", "")))
+cors.all$sum <- paste("R = ", cors.all$r, cors.all$star, sep = "")
+```
+
+
+
+# Plotting
+```{r plotting}
+
+# BITE MARKS
+## Post hoc letters
+sigletters.bm <- multcomp::cld(hsd.bm$emmeans, alpha = 0.05, Letters = letters, reversed = TRUE) # get CLD
+
+### Make order match with summary dataframe
+sigletters.bm <- sigletters.bm[order(sigletters.bm$Location),]
+sigletters.bm <- sigletters.bm %>% dplyr::mutate(.group = str_squish(.group)) # remove white spaces
+
+### Merge sig.letter dataframe into the summary dataframe
+Bitemarks.plot <- cbind(Bitemarks.sum, siglet = sigletters.bm$.group)
+
+# Graph
+gg.bm <- ggplot(Bitemarks.plot, aes(x = Location, y = Bitemarks.m2, fill = Protection))+
+  geom_bar(stat = "identity", position = position_dodge())+
+  scale_fill_manual(values=c("#A9A9A9", "#7A7A7A", "#5A5A5A"))+
+  facet_wrap(~ Species, scales="free_x")+
+  labs(y = expression(paste("Bite marks ( ", m^-2,")")), x = "Study site")+
+  scale_y_continuous(limits = c (-0.005, 1.12*(max(Bitemarks.plot$Bitemarks.m2) + max(Bitemarks.plot$se))), breaks = waiver(), minor_breaks = waiver(), n.breaks = 4, expand = c(0,0))+
+  geom_errorbar(aes(ymin=ifelse(Bitemarks.m2 - se < 0,0, Bitemarks.m2-(1*se)), ymax=Bitemarks.m2+(1*se)), width=.2, position=position_dodge(.9))+
+  geom_text(data = Bitemarks.plot, aes(x=Location, y = Bitemarks.m2 + (1*se), label = siglet), 
+            vjust= -0.8, hjust = 0.5, size = 5, fontface = "bold", position=position_dodge(.9))+
+  scale_x_discrete(expand = c(0, 0.7))+
+  theme_economist()+scale_colour_economist()+
+  theme(
+    panel.margin.y = unit(0, "cm"),
+    strip.text.x = element_text(size = 14, face = "bold.italic", vjust = 2, margin = margin(0.2, 0, 0.1, 0, "cm")),
+    strip.background = element_blank(),
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.title.y = element_text(color="black" , vjust=4, size = 14),
+    axis.text.y=element_text(size=12, face = "bold", vjust=0.4),
+    plot.margin = margin(t = 5, r = 5,  b = 0,  l = 20),
+    panel.background = element_rect(fill = "#FCFCFC"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    panel.grid.major = element_line(colour = "#797979", size = 0.3),
+    axis.ticks.length = unit(0.15, "cm")
+    )
+
+#CONDITION
+## Post hoc letters
+sigletters <- multcomp::cld(hsd.cond$emmeans, alpha = 0.05, Letters = letters, reversed = TRUE) # get CLD
+
+### Make order match with summary dataframe
+sigletters <- sigletters[order(sigletters$Location),]
+sigletters <- sigletters %>% dplyr::mutate(.group = str_squish(.group)) # remove white spaces
+
+### Merge sig.letter dataframe into the summary dataframe
+Condition.plot <- cbind(Condition.sum, siglet = sigletters$.group)
+
+# Graph
+gg.cond <- ggplot(Condition.plot, aes(x = Location, y = Condition, fill = Protection))+
+  geom_bar(stat = "identity", position = position_dodge())+
+  scale_fill_manual(values=c("#A9A9A9", "#7A7A7A", "#5A5A5A"))+
+  facet_wrap(~ Species, scales="free_x")+
+  labs(y = expression(paste("Live coral tissue (%)")), x = "Study site")+
+  scale_y_continuous(limits = c (-0.005, 1.05*(max(Condition.plot$Condition) + max(Condition.plot$se))), breaks = c(0, 50, 100), expand = c(0,0))+
+  geom_errorbar(aes(ymin=ifelse(Condition - se < 0,0, Condition-(1*se)), ymax=Condition+(1*se)), width=.2, position=position_dodge(.9))+
+  geom_text(data = Condition.plot, aes(x=Location, y = Condition + (1*se), label = siglet), 
+            vjust= -0.8, hjust = 0.5, size = 5, fontface = "bold", position=position_dodge(.9))+
+  scale_x_discrete(expand = c(0, 0.7))+
+  theme_economist()+scale_colour_economist()+
+  theme(
+    panel.margin.y = unit(0, "cm"),
+    strip.text.x = element_blank(),
+    strip.background = element_blank(),
+    axis.title.x = element_text(color="black", vjust=-2, size = 14),
+    axis.text.x = element_text(angle = 0, size=12, face = "bold", vjust=0.5),
+    axis.title.y = element_text(color="black" , vjust=4, size = 14),
+    axis.text.y=element_text(size=12, face = "bold", vjust=0.4),
+    plot.margin = margin(t = 15, r = 5,  b = 10,  l = 20),
+    panel.background = element_rect(fill = "#FCFCFC"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    panel.grid.major = element_line(colour = "#797979", size = 0.3),
+    axis.ticks.length = unit(0.15, "cm")
+    )
+
+figure <- ggarrange( gg.bm, gg.cond,
+                    labels = c("a", "b"),
+                    font.label = list(size = 16, color = "black", face = "bold", family = NULL),
+                    widths = c(1, 1),
+                    ncol = 1, nrow = 2, 
+                    common.legend = T,
+                    align = "hv",
+                    legend="bottom")
+  ggsave("Corallivory correlations AR_Outplanted corals.tiff", figure, width = 21, height = 18, units = "cm", dpi=1200, compression = "lzw")
+  
+# BITEMARKS - CONDITION - FACFISH
+
+## FACFISH - BITEMARKS
+FF.BM <- ggplot(Cor.fig, aes(x = Facfish.kgha, y = Bitemarks.m2, fill = Species)) + 
+  geom_errorbar(aes(ymin=Bitemarks.m2-BM.se, ymax=Bitemarks.m2+BM.se), size =0.5, colour = "black", width=0)+
+  geom_errorbar(aes(xmin=Facfish.kgha-FF.se, xmax=Facfish.kgha+FF.se), size =0.5, colour = "black", width=0)+
+  scale_x_continuous(expression(paste("Facultative fish (kg ", ha^-1,")")), label = waiver (), limits = c (0, 440), breaks = c(0, 200, 400))+
+  scale_y_continuous(expression(paste("Bite marks (", m^-2,")")), limits = c(0, 3400), label = waiver ())+
+  geom_point(aes(fill=Species), colour = "black", shape = 21, size =3, stroke = 1.25) +
+  geom_smooth(aes(colour=Species, linetype=Species), method="lm", se=FALSE, size = 1.75, fullrange=FALSE)+
+  scale_linetype_manual(values=c("dashed", "solid", "solid"))+
+  scale_fill_manual(values = c("#FF930B", "#AF00B2", "#DCE215"))+
+  scale_colour_manual(values = c("#FF930B", "#AF00B2", "#DCE215"))+
+   theme(
+    text = element_text(size = 16),
+    axis.title.x = element_text(color="black", vjust=-1, size = 12),
+    axis.text.x = element_text(angle = 0, size=12, face = "bold", vjust=0),
+    axis.title.y = element_text(color="black", size = 12, vjust=1),
+    axis.text.y = element_text(angle = 0, size=12, face = "bold", vjust=0),
+    panel.background = element_rect(fill = "#FCFCFC"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    axis.line = element_line(size = 0.5, colour = "Black", linetype=1),
+    panel.border = element_rect(colour = "white", fill=NA, size=0.5),
+    legend.key = element_rect(fill = "#FFFFFF"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_line(colour="#FCFCFC", size=0.1),
+    plot.margin = margin(c(5,0,5,5), "cm")
+    )+
+    #geom_text(aes(label=Location),hjust=0.5, vjust=0.35, size = 4)+
+    annotate("text", x = 350, y = 700, label = cors.all$sum[cors.all$ID == "AcrXBitemarks.m2XFacfish.kgha"], size = 5, colour = "#FF930B")+
+    annotate("text", x = 350, y = 2300, label = cors.all$sum[cors.all$ID == "PocXBitemarks.m2XFacfish.kgha"], size = 5, colour = "#AF00B2")+
+    annotate("text", x = 350, y = 3000, label = cors.all$sum[cors.all$ID == "PorXBitemarks.m2XFacfish.kgha"], size = 5, colour = "#DCE215")
+
+## BITEMARKS - CONDITION
+BM.C <- ggplot(Cor.fig, aes(x = Bitemarks.m2, y = Condition, fill = Species)) + 
+  geom_errorbar(aes(ymin=Condition-C.se, ymax=Condition+C.se), size =0.5, colour = "black", width=0)+
+  geom_errorbar(aes(xmin=Bitemarks.m2-BM.se, xmax=Bitemarks.m2+BM.se), size =0.5, colour = "black", width=0)+
+  scale_x_continuous(expression(paste("Bite marks (", m^-2,")")), label = waiver (), limits = c (0, 3400))+
+  scale_y_continuous("Live coral tissue (%)", limits = c(0, 110), breaks = c(0, 50, 100), label = waiver ())+
+  geom_point(aes(fill=Species), colour = "black", shape = 21, size =3, stroke = 1.25) +
+  geom_smooth(aes(colour=Species, linetype=Species), method="lm", se=FALSE, size = 1.75, fullrange=FALSE)+
+  scale_linetype_manual(values=c("dashed", "solid", "dashed"))+
+  scale_fill_manual(values = c("#FF930B", "#AF00B2", "#DCE215"))+
+  scale_colour_manual(values = c("#FF930B", "#AF00B2", "#DCE215"))+
+   theme(
+    text = element_text(size = 16),
+    axis.title.x = element_text(color="black", vjust=-1, size = 12),
+    axis.text.x = element_text(angle = 0, size=12, face = "bold", vjust=0),
+    axis.title.y = element_text(color="black", size = 12, vjust=1),
+    axis.text.y = element_text(angle = 0, size=12, face = "bold", vjust=0),
+    panel.background = element_rect(fill = "#FCFCFC"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    axis.line = element_line(size = 0.5, colour = "Black", linetype=1),
+    panel.border = element_rect(colour = "white", fill=NA, size=0.5),
+    legend.key = element_rect(fill = "#FFFFFF"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_line(colour="#FCFCFC", size=0.1),
+    plot.margin = margin(c(5,0,5,5), "cm")
+    )+
+    #geom_text(aes(label=Location),hjust=0.5, vjust=0.35, size = 4)+
+    annotate("text", x = 550, y = 106, label = cors.all$sum[cors.all$ID == "AcrXBitemarks.m2XCondition"], size = 5, colour = "#FF930B")+
+    annotate("text", x = 2000, y = 60, label = cors.all$sum[cors.all$ID == "PocXBitemarks.m2XCondition"], size = 5, colour = "#AF00B2")+
+    annotate("text", x = 1100, y = 45, label = cors.all$sum[cors.all$ID == "PorXBitemarks.m2XCondition"], size = 5, colour = "#DCE215")
+
+figure2 <- ggarrange(BM.C, FF.BM, 
+                    labels = c("a", "b"),
+                    font.label = list(size = 16, color = "black", face = "bold", family = NULL),
+                    widths = c(1, 1),
+                    ncol = 2, nrow = 1, 
+                    common.legend = T,
+                    legend="bottom")
+  ggsave("Corallivory correlations AR_Bitemarks and Condition AR.tiff", figure2, width = 21, height = 11, units = "cm", dpi=1200, compression = "lzw")
+
+ 
+
+```
+
+# Table to compare bitemarks AR with NR
+```{r table}
+
+# create new word document
+new.word.doc=function(){
+  my.doc=read_docx()
+  return(my.doc)
+}
+
+# add an empty line
+add.empty.line=function(doc){
+  body_add_par(doc, " ")
+  return("empty line added")
+}
+
+# add a data frame as a table
+add.table=function(doc, tbl, col.keys=NULL, col.digits=NULL){
+  # create basic flextable
+  f.table=qflextable(tbl)
+  
+  # set table borders
+  f.table=border_inner_h(f.table, part="header", border=fp_border(color="black", width = 1))
+  #f.table=border_inner_v(f.table, part="all", border=fp_border(color="black", width = 1))
+  
+  # set fonts
+  f.table=flextable::font(f.table,  fontname = "Times", part = "all")
+  # also set the table's header font as bold
+  f.table=bold(f.table, part = "header")
+  
+  # add the table to the document
+  flextable::body_add_flextable(doc, 
+                                value = f.table, 
+                                align = "left" )
+  return("table added")
+}
+
+# create a new document object
+doc=new.word.doc()
+add.empty.line(doc)
+add.table(doc, BM)
+
+# generate the Word document using the print function
+base::print(doc, target="Bitemark comparison NR and AR.docx")
+
+```
+
+# Check packages used
+```{r}
+
+knitr::purl("corallivory correlations AR.Rmd")
+list.functions.in.file("corallivory correlations AR.R")
+unlink("corallivory correlations AR.R")
+
+```
+
+

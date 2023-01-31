@@ -1,0 +1,454 @@
+---
+title: "bitemarks"
+author: "Ewout Knoester"
+date: "17/03/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+rm(list=ls()) # Clear workspace
+knitr::opts_knit$set(root.dir = '/tmp') #Set directory at current directory for all subsequent chunks
+options(scipen = 50) # Have all numbers in non-scientific notation
+
+library(car) # ANOVA results
+library(data.table) # Data table
+library(emmeans) # Pairwise comparisons
+library(ggthemes) # pretty plots
+library(NCmisc) # Check packages used
+library(nlme) # GLS
+library(panelr) # Convert data from wide to long
+library(plyr) # Join (vlookup)
+library(tidyverse) # Data manipulation and plotting
+library(readxl) # Import excel sheets
+library(writexl) # Export Excel
+
+data_summary <- function(data, varname, groupnames){
+  require(plyr)
+  summary_func <- function(x, col){
+    c(sum = sum(x[[col]]),
+      mean = mean(x[[col]], na.rm=TRUE),
+      sd = sd(x[[col]], na.rm=TRUE),
+      n  = length(x[[col]]),
+      se = sd(x[[col]], na.rm=TRUE)/sqrt(length(x[[col]])))
+  }
+  data_sum<-ddply(data, groupnames, .fun=summary_func,
+                  varname)
+  data_sum <- plyr::rename(data_sum, c("mean" = varname))
+ return(data_sum)
+}
+
+```
+
+# Data selection (preparing dataset for archiving & sharing)
+```{r data selection}
+
+# RAW data
+## Load Excel
+df0.raw <- read_excel("Raw data/Benthic surveys_Bitemarks.xlsx", sheet = 3, skip = 1)
+
+## Convert to long dataframe
+df1.clean <- as.data.frame(long_panel(df0.raw, prefix = "_", begin = 1, end = 149, label_location = "end"))
+
+## Tidy dataframe
+df1.clean <- df1.clean[order(df1.clean$wave),]
+df1.clean <- select(df1.clean, -c('id', 'Code', 'Species', 'SUM'))
+colnames(df1.clean)[which(names(df1.clean) == "wave")] <- "Survey"
+colnames(df1.clean)[which(names(df1.clean) == "Predation.marks")] <- "Bitemarks"
+
+# META data
+## Load Excel
+meta <- read_excel("Raw data/Benthic surveys_Bitemarks.xlsx", sheet = 2)
+
+## Tidy dataframe
+meta <- select(meta, c('Survey', 'Date', 'Location', 'Observer'))
+
+### Transform survey IDs into numbers
+meta$Survey <- sub(".", "", meta$Survey)
+meta$Survey  = str_remove(meta$Survey, "^0+")
+meta$Survey <- as.factor(meta$Survey)
+
+### Set Protection
+meta$Protection <- as.factor(ifelse(meta$Location  == 1, "Fished",
+                  ifelse(meta$Location  == 2, "Fished", 
+                   ifelse(meta$Location  == 3, "Reserve", 
+                    ifelse(meta$Location  == 4, "Reserve", 
+                     ifelse(meta$Location  == 5, "No-take", "No-take"))))))
+
+# APPLY SELECTION
+meta$Select <- ifelse(meta$Observer  == 2, 1, 0) # Select surveys by observer 2 (Nienke) 
+df2.selex <- df1.clean[df1.clean$Survey %in% c(unlist(na.omit(meta$Survey[meta$Select == 1]))),] # Select from data using metadata
+
+# MERGE data with metadata
+meta <- select(meta, -c('Observer', 'Select'))
+df2.selex <- merge(df2.selex, meta, by = 'Survey')
+
+# EXPORT DATA SELECTION
+write_xlsx(df2.selex,"Benthic surveys_Bitemarks_Predation pressure restoration.xlsx")
+
+```
+
+# Data cleaning 
+<!--
+Data info:
+  Counting bite marks on all hard coral colonies directly underneath a 20-m (point intercept) transect at various study sites
+  Study sites: 1 (Firefly), 2 (Pilli Pipa), 3 (Lower Mpunguti), 4 (Dolphin Point), 5 (Kisite) & 6 (Wasini)
+  Study sites either in: Fished (open fishing area), Reserve (traditional methods only) or enforced No-take zone
+  Size of each colony was estimated by simplyfying it's shape to a circle and take the diameter of that circle
+  Colony health was noted (in percentages) using the following groups: Healthy, Dead, Predated, Unhealthy
+  Bite marks were scored as separate lesions distinctively visible, and suspected corallivore was noted (Fish, Gastropod, Worms) 
+-->
+```{r data cleaning}
+
+# Load selected data
+df2.selex <- read_excel("Benthic surveys_Bitemarks_Predation pressure restoration.xlsx", sheet = 1)
+
+# Set variables
+df2.selex$Protection <- factor(df2.selex$Protection, ordered = TRUE, levels = c("Fished", "Reserve", "No-take"))
+df2.selex$Location <- as.factor(df2.selex$Location)
+df2.selex$Survey <- as.factor(df2.selex$Survey)
+df2.selex$Genus <- as.factor(df2.selex$Genus)
+df2.selex$Bitemarks <- as.numeric(df2.selex$Bitemarks)
+
+# Clean data: fill missing values
+df2.selex$Predator <- ifelse(df2.selex$Predator == "?", "Fish", df2.selex$Predator) # Set two unknown bite marks to fish
+df2.selex$Bitemarks <- ifelse(df2.selex$Predator == "30 Fish, 38 Worms", 30, df2.selex$Bitemarks) # Fill missing based on notes
+
+#! DECISION: set all non-fish bite marks to 0: continue analysis with fish bites only
+## Comment: relatively less fish bites at study sites 2 & 6 (i.e. they have relatively more bites when all bites are included)
+df2.selex$Bitemarks <- ifelse(grepl("ish", df2.selex$Predator), df2.selex$Bitemarks, 0) #
+
+# TOTAL BITEMARKS per survey
+df3.Survey  <- df2.selex %>%
+        dplyr::group_by(Protection, Location, Survey) %>%
+        dplyr::summarise(Bitemarks.sur = sum(Bitemarks, na.rm=TRUE))
+
+# DIVERSITY INDEX
+## Count colonies per genus
+df3.H <- df2.selex %>%
+        dplyr::group_by(Protection, Location, Survey, Genus) %>%
+        dplyr::tally()
+df3.H <- df3.H[!is.na(df3.H$Genus),]
+colnames(df3.H)[which(names(df3.H) == "n")] <- "Colony.count"
+
+## Get total count of colonies per survey
+df3.H.count  <- df3.H %>%
+        dplyr::group_by(Survey) %>%
+        dplyr::summarise(Colony.sur = sum(Colony.count))
+df3.H <- merge(df3.H, df3.H.count, by = 'Survey')
+
+## Calculate Shannon
+df3.H$calc <- (df3.H$Colony.count/ df3.H$Colony.sur)*log(df3.H$Colony.count/ df3.H$Colony.sur)
+
+df3.H  <- df3.H %>%
+        dplyr::group_by(Protection, Location, Survey) %>%
+        dplyr::summarise(H = -1*sum(calc))
+
+df3.H.loc <- data_summary(df3.H, varname = "H", groupnames = c("Protection", "Location"))
+
+## BITEMARKS PER M2 (calculated: total bite marks per survey/ total colony areas per survey)
+## Calculation this way takes size of each colony into account when calculating bite marks/m2, i.e. larger colonies weigh heavier
+df3.BM <- select(df2.selex, c('Protection', 'Location', 'Survey', 'Genus', 'Diameter.cm', 'Bitemarks'))
+df3.BM <- df3.BM[!is.na(df3.BM$Diameter.cm),]
+df3.BM$Diameter.cm <- ifelse(df3.BM$Diameter.cm == 0, 1, df3.BM$Diameter.cm) # Set 1 cm as smallest diameter
+
+# Calculate area based on diameter (assuming circular shape of colonies)
+df3.BM <- df3.BM %>%
+  add_column(Area.m2 = pi*(df3.BM$Diameter.cm/100/2)^2,
+             .after = "Diameter.cm")
+
+# Calculations per genus
+df3.BM.gen <- select(df3.BM, c('Survey', 'Location', 'Genus', 'Diameter.cm', 'Bitemarks'))
+df3.BM.gen$Bitemarks.m2 <- df3.BM.gen$Bitemarks/(pi*((df3.BM.gen$Diameter.cm/200)^2))
+
+# Group rare (total count < 5) and solitary corals as 'Other' to tidy up graphs
+GenCount <- df3.BM.gen %>%
+        dplyr::group_by(Genus) %>%
+        dplyr::tally()
+df3.BM.gen <- merge(GenCount, df3.BM.gen, by = 'Genus')
+df3.BM.gen$Genus <- as.factor(ifelse(df3.BM.gen$n < 5 | df3.BM.gen$Genus == "Unknown" | df3.BM.gen$Genus == "Fungia", "Other" , as.character(df3.BM.gen$Genus))) 
+                         
+# Set Growthform: Branching & Other
+df3.BM.gen$Growthform <- as.factor(ifelse(df3.BM.gen$Genus  == "Acropora" | 
+                                    df3.BM.gen$Genus  == "Isopora" |
+                                    df3.BM.gen$Genus  == "Pocillopora" |
+                                    df3.BM.gen$Genus  == "Porites" |
+                                    df3.BM.gen$Genus  == "Seriatopora" |
+                                    df3.BM.gen$Genus  == "Stylophora", "Branching", "Other"))
+
+# COVER PER CORAL GENUS
+## Load data
+benthic.selex <- read_excel("Benthic surveys_2022-03_Predation pressure restoration_Benthic cover.xlsx", sheet = 1)
+
+# Get counts per genus per Survey
+df3.HC.g <- select(benthic.selex, c('Protection', 'Location', 'Survey', 'Genus', 'Group'))
+df3.HC.g$Survey <- as.factor(df3.HC.g$Survey)
+df3.HC.sum <- subset(df3.HC.g, Group == "Hard.coral") # Select hard coral only
+df3.HC.sum$Genus <- as.factor(df3.HC.sum$Genus)
+df3.HC.sum <- df3.HC.sum %>%
+        dplyr::group_by(Survey, Genus, .drop=FALSE) %>%
+        dplyr::tally() 
+
+# Get cover from benthic surveys by dividing by number of surveys (60) and points per survey (41)
+df3.HC.sum$Cover <- (df3.HC.sum$n/ (41))*100
+
+# Group rare (total count < 5) and solitary corals as 'Other' to tidy up graphs
+df3.HC.sum <- merge(GenCount, df3.HC.sum, by = 'Genus')
+colnames(df3.HC.sum) <- c("Genus", "n.bitemarksurvey", "Survey" ,"n.benthicsurvey", "Cover")
+df3.HC.sum$Genus <- as.factor(ifelse(df3.HC.sum$n.bitemarksurvey < 5 | df3.HC.sum$Genus == "Fungia", "Other" , as.character(df3.HC.sum$Genus))) 
+df3.HC.sum <- data_summary(df3.HC.sum, varname = "Cover", groupnames = c("Survey", "Genus"))
+df3.HC.sum <- select(df3.HC.sum, c('Survey','Genus', 'Cover'))
+
+# Summarize
+df3.BM.surtot  <- df3.BM %>%
+        dplyr::group_by(Protection, Location, Survey) %>%
+        dplyr::summarise(Bitemarks.sur = sum(Bitemarks), Area.sur = sum(Area.m2))
+df3.BM.surtot$Bitemarks.m2 <- df3.BM.surtot$Bitemarks.sur/ df3.BM.surtot$Area.sur
+df3.BM.surtot.loc <- data_summary(df3.BM.surtot, varname = "Bitemarks.m2", groupnames = c("Protection", "Location"))
+
+# Summarize stepwise by survey (n = max 60)
+## Summarize over survey first
+#df3.BM.gen.sum <- data_summary(df3.BM.gen, varname = "Bitemarks.m2", groupnames = c("Survey", "Genus", "Growthform"))
+## Then summarize by Genus
+df3.BM.gen.sum.sum <- data_summary(df3.BM.gen, varname = "Bitemarks.m2", groupnames = c("Growthform", "Genus"))
+
+df3.HC.sum.sum <- data_summary(df3.HC.sum, varname = "Cover", groupnames = c("Genus"))
+df3.HC.sum.sum[is.na(df3.HC.sum.sum)] <- 0
+
+df3.BM.gen.sum.sum <- merge(df3.HC.sum.sum, df3.BM.gen.sum.sum, by = 'Genus')
+df3.BM.gen.sum.sum <- select(df3.BM.gen.sum.sum, -c(2, 4, 8, 10))
+colnames(df3.BM.gen.sum.sum) <- c("Genus", "Cover", "Cover.n", "Cover.se", "Growthform", "Bitemarks", "Bitemarks.n", "Bitemarks.se")
+
+df3.BM.gen.sum.sum$Genus <- factor(df3.BM.gen.sum.sum$Genus ,  levels=c("Acropora", "Isopora", "Pocillopora", "Porites", "Seriatopora","Stylophora", "Acanthastrea", "Astreopora", "Coscinaraea", "Favia", "Echinopora", "Favites", "Galaxea", "Goniastrea", "Goniopora", "Hydnophora", "Lobophyllia", "Montipora", "Pavona", "Physogyra", "Platygyra", "Porites (massive)", "Other"))
+
+levels(df3.BM.gen.sum.sum$Genus) <- c("Acropora", "Isopora", "Pocillopora", "Porites", "Seriatopora","Stylophora", "Acanthastrea", "Astreopora", "Coscinaraea", "Dipsastraea", "Echinopora", "Favites", "Galaxea", "Goniastrea", "Goniopora", "Hydnophora", "Lobophyllia", "Montipora", "Pavona", "Physogyra", "Platygyra", "Porites (mas)", "Other")
+
+# Get colony counts added to Genus names
+df3.BM.gen.sum.sum <- df3.BM.gen.sum.sum[order(df3.BM.gen.sum.sum$Genus),]
+df3.BM.gen.sum.sum$Counter <- 1:nrow(df3.BM.gen.sum.sum) 
+df3.BM.gen.sum.sum$Genus <- paste(df3.BM.gen.sum.sum$Genus, " (", df3.BM.gen.sum.sum$Bitemarks.n, ")", sep = "")
+df3.BM.gen.sum.sum$Genus <- reorder(df3.BM.gen.sum.sum$Genus, df3.BM.gen.sum.sum$Counter, FUN = mean)
+
+# BITEMARKS PER LOCATION FOR ACR, POC & POR
+df3.BM.gen.loc <- subset(df3.BM.gen, Genus == "Acropora" | Genus == "Pocillopora" | Genus == "Porites")
+
+# Average over individual coral colonies (not first averaged by survey)
+df3.BM.gen.loc.loc <- data_summary(df3.BM.gen.loc, varname = "Bitemarks.m2", groupnames = c("Genus", "Location"))
+df3.BM.gen.loc.loc <- select(df3.BM.gen.loc.loc, -c('sum', 'sd'))
+
+```
+
+# Model
+```{r model}
+
+# Bite marks
+gls1  <- gls(Bitemarks.m2 ~ Location, data = df3.BM.surtot)
+
+## Allowing for heterogeneity among Locations improves residuals
+gls1.w  <- gls(Bitemarks.m2 ~ Location, weights = varIdent(form = ~ 1|Location), data = df3.BM.surtot)
+
+## Output
+car::Anova(gls1.w)
+
+# Coral diversity
+gls1.h  <- gls(H ~ Location, weights = varIdent(form = ~ 1|Location), data = df3.H)
+
+## Output
+car::Anova(gls1.h)
+
+# Correlation bitemarks - branching coral
+cor.data <- subset(df3.BM.gen.sum.sum, Growthform == "Branching")
+cor.data$Cover.log <- log10(cor.data$Cover)
+cor.data <- select(cor.data, c('Cover', 'Cover.log', 'Bitemarks'))
+
+cors <- as.data.frame(correlation::correlation(cor.data, p_adjust = "none"))
+
+plot(cor.data$Bitemarks, cor.data$Cover)
+plot(cor.data$Bitemarks, cor.data$Cover.log)
+
+# Correlation bitemarks - non-branching coral
+cor.data.nb <- subset(df3.BM.gen.sum.sum, Growthform == "Other")
+cor.data.nb <- select(cor.data.nb, c('Cover', 'Bitemarks'))
+
+cors.nb <- as.data.frame(correlation::correlation(cor.data.nb, p_adjust = "none"))
+
+```
+
+# Model validation
+```{r model validation}
+
+# Bite marks
+mod <- gls1.w # set model to be validated
+op <- par(mfrow = c(2, 3), mar = c(5, 4, 1, 2)) # set layout of figure frame
+plot(resid(mod, type = "pearson") ~ fitted(mod)) # fitted vs residuals
+abline(0,0)
+hist(resid(mod, type = "pearson"), main = "") # histogram residuals
+qqnorm(resid(mod, type = "pearson")) # QQplot residuals
+plot(df3.BM.surtot$Location, resid(mod, type = "pearson")) # residuals split over Date
+abline(0,0)
+plot(fitted(mod) ~ df3.BM.surtot$Bitemarks.m2) # response data vs fitted
+par(op)
+
+# Coral diversity
+mod <- gls1.h # set model to be validated
+op <- par(mfrow = c(2, 3), mar = c(5, 4, 1, 2)) # set layout of figure frame
+plot(resid(mod, type = "pearson") ~ fitted(mod)) # fitted vs residuals
+abline(0,0)
+hist(resid(mod, type = "pearson"), main = "") # histogram residuals
+qqnorm(resid(mod, type = "pearson")) # QQplot residuals
+plot(df3.H$Location, resid(mod, type = "pearson")) # residuals split over Date
+abline(0,0)
+plot(fitted(mod) ~ df3.H$H) # response data vs fitted
+par(op)
+
+```
+# Post hoc
+```{r post hoc}
+
+# Bite marks
+hsd <- emmeans(gls1.w, specs = pairwise ~ Location, adjust = "tukey", type = "response")
+
+# Coral diversity
+hsd.h <- emmeans(gls1.h, specs = pairwise ~ Location, adjust = "tukey", type = "response")
+
+```
+
+# Plot
+```{r plot}
+
+# Bite marks x location
+# Post hoc letters
+sigletters.loc <- multcomp::cld(hsd$emmeans, alpha = 0.05, Letters = letters, reversed = FALSE) # get CLD
+
+# Make order match with summary dataframe
+sigletters.loc <- sigletters.loc[order(sigletters.loc$Location),]
+sigletters.loc <- sigletters.loc %>% dplyr::mutate(.group = str_squish(.group)) # remove white spaces
+
+# Merge sig.letter dataframe into the summary dataframe
+df3.BM.surtot.loc <- cbind(df3.BM.surtot.loc, siglet.loc = sigletters.loc$.group)
+
+# Plot
+ggplot(df3.BM.surtot.loc, aes(x = Location, y = Bitemarks.m2))+
+  geom_bar(stat = "identity", position = position_dodge())+ 
+  facet_wrap(~ Protection, scales="free_x")+
+  labs(y = expression(paste("Bite marks (", m^-2,")")))+
+  scale_y_continuous(limits = c (0, 44), expand = c(0,0))+
+  geom_errorbar(aes(ymin=Bitemarks.m2-(1*se), ymax=Bitemarks.m2+(1*se)), width=.2, position=position_dodge(.9))+
+  geom_text(data = df3.BM.surtot.loc, aes(x=Location, y = Bitemarks.m2 + (1*se), label = siglet.loc), 
+            vjust= -0.8, hjust = 0.5, size = 5, fontface = "bold", position=position_dodge(.9))+
+  scale_x_discrete(expand = c(0, 0.7))+
+  theme_economist()+scale_colour_economist()+
+  theme(
+    panel.margin.y = unit(0, "cm"),
+    strip.text.x = element_text(size = 14, face = "bold", vjust = 2, margin = margin(0.2, 0, 0.1, 0, "cm")),
+    strip.background = element_blank(),
+    axis.title.x = element_text(color="black", vjust=-2, size = 14),
+    axis.text.x = element_text(angle = 0, size=12, face = "bold", vjust=0.5),
+    axis.title.y = element_text(color="black" , vjust=4, size = 14),
+    axis.text.y=element_text(size=12, face = "bold", vjust=0.4),
+    plot.margin = margin(t = 10, r = 40,  b = 25,  l = 20),
+    panel.background = element_rect(fill = "#FCFCFC"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    panel.grid.major = element_line(colour = "#797979", size = 0.3),
+    axis.ticks = element_blank()
+    )
+
+# Coral diversity x location
+# Post hoc letters
+sigletters.loc.h <- multcomp::cld(hsd.h$emmeans, alpha = 0.05, Letters = letters, reversed = FALSE) # get CLD
+
+# Make order match with summary dataframe
+sigletters.loc.h <- sigletters.loc.h[order(sigletters.loc.h$Location),]
+sigletters.loc.h <- sigletters.loc.h %>% dplyr::mutate(.group = str_squish(.group)) # remove white spaces
+
+# Merge sig.letter dataframe into the summary dataframe
+df3.H.loc.h <- cbind(df3.H.loc, siglet.loc = sigletters.loc.h$.group)
+
+# Plot
+ggplot(df3.H.loc.h, aes(x = Location, y = H))+
+  geom_bar(stat = "identity", position = position_dodge())+ 
+  facet_wrap(~ Protection, scales="free_x")+
+  labs(y = "Shannon Index H'", x = "Study site")+
+  scale_y_continuous(limits = c (0, 2.5), expand = c(0,0))+
+  geom_errorbar(aes(ymin=H-(1*se), ymax=H+(1*se)), width=.2, position=position_dodge(.9))+
+  geom_text(data = df3.H.loc.h, aes(x=Location, y = H + (1*se), label = siglet.loc), 
+            vjust= -0.8, hjust = 0.5, size = 5, fontface = "bold", position=position_dodge(.9))+
+  scale_x_discrete(expand = c(0, 0.7))+
+  theme_economist()+scale_colour_economist()+
+  theme(
+    panel.margin.y = unit(0, "cm"),
+    strip.text.x = element_text(size = 14, face = "bold", vjust = 2, margin = margin(0.2, 0, 0.1, 0, "cm")),
+    strip.background = element_blank(),
+    axis.title.x = element_text(color="black", vjust=-2, size = 14),
+    axis.text.x = element_text(angle = 0, size=12, face = "bold", vjust=0.5),
+    axis.title.y = element_text(color="black" , vjust=4, size = 14),
+    axis.text.y=element_text(size=12, face = "bold", vjust=0.4),
+    plot.margin = margin(t = 10, r = 40,  b = 25,  l = 20),
+    panel.background = element_rect(fill = "#FCFCFC"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    panel.grid.major = element_line(colour = "#797979", size = 0.3),
+    axis.ticks = element_blank()
+    )
+ggsave("Bitemarks_Coral_Diversity.tiff", width = 23, height = 14, units = "cm", dpi=1200, compression = "lzw")
+
+# CORRELATION bitemarks and cover per coral genus
+ggplot(df3.BM.gen.sum.sum, aes(x = Bitemarks, y = Cover, fill = Genus, shape = Growthform, alpha = Growthform)) + 
+  geom_errorbar(aes(ymin= ifelse(Cover-Cover.se < 0, 0, Cover-Cover.se), ymax=Cover+Cover.se), size =0.5, colour = "black")+
+  geom_errorbar(aes(xmin = ifelse(Bitemarks-Bitemarks.se < 0, 0, Bitemarks-Bitemarks.se), xmax=Bitemarks+Bitemarks.se), size =0.5, colour = "black")+
+  scale_x_continuous(expression(paste("Bite marks (", m^-2,")")), label = waiver (), limits = c (0, 500))+
+  scale_y_continuous("Coral cover (%)", limits = c(0, 16), label = waiver ())+
+  geom_point(colour = "black", size =5, stroke = 1.25) +
+  scale_shape_manual(values = c(24, 21))+
+  scale_alpha_discrete(range = c(1, 0.8))+
+  scale_fill_manual(values = c("#ff930b","#D34000", "#860000",  "#ffff6f", "#FF5DD3", "#9F0AB1", "#3A154A",   "#25006a", "#52338C", "#3d01ac", "#527DAD", "#4E90D8", "#1575de", "#94DBF1", "#B6EEFF", "#E0F4F4", "#26b3de", "#49e9ea", "#2ee27c", "#B9FFBB", "#78ff7d", "#ccffa3", "#c5c5c5"))+
+  guides(fill = guide_legend(order = 3),
+         shape = FALSE,
+         alpha = FALSE)+
+  guides(fill = guide_legend(title="Genus", override.aes=list(
+    shape=c(24, 24, 24, 24, 24, 24, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21, 21), 
+    alpha = c(1,1,1,1,1,1, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8))))+
+    theme(
+    text = element_text(size = 12),
+    axis.title.x = element_text(color="black", vjust=-1, size = 12),
+    axis.text.x = element_text(angle = 0, size=12, face = "bold", vjust=0),
+    axis.title.y = element_text(color="black", size = 12, vjust=1),
+    axis.text.y = element_text(angle = 0, size=12, face = "bold", vjust=0),
+    panel.background = element_rect(fill = "#FCFCFC"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    axis.line = element_line(size = 0.5, colour = "Black", linetype=1),
+    panel.border = element_rect(colour = "white", fill=NA, size=0.5),
+    legend.key = element_rect(fill = "#FCFCFC"),
+    legend.text = element_text(colour="black", size=10, face="italic"),
+    legend.margin=margin(c(-3,1,0,-12), unit='cm'),
+    legend.box = "vertical",
+    #legend.position = "none",
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_line(colour="#FCFCFC", size=0.1),
+    plot.margin = margin(c(5,0,5,5), "cm")
+    )
+ggsave("Bitemarks_BitemarksCover.tiff", width = 23, height = 14, units = "cm", dpi=1200, compression = "lzw")
+
+
+```
+
+# Save summary data to Excel for correlations
+```{r corexcel}
+
+df3.BM.surtot.loc.xs <- select(df3.BM.surtot.loc, -c('sum', 'sd')) 
+write_xlsx(df3.BM.surtot.loc.xs,"Correlation data/Correlations_Bitemarks.xlsx")
+
+df3.H.loc.xs <- select(df3.H.loc, -c('sum', 'sd')) 
+write_xlsx(df3.H.loc.xs,"Correlation data/Correlations_Coral diversity.xlsx")
+
+write_xlsx(df3.BM.gen.loc.loc, "Correlation data/Bitemarks_Natural reef.xlsx")
+
+```
+
+# Check packages used
+```{r}
+
+knitr::purl("bitemarks.Rmd")
+list.functions.in.file("bitemarks.R")
+unlink("bitemarks.R")
+
+```

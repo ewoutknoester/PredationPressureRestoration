@@ -1,0 +1,200 @@
+---
+title: "Snail predation"
+author: "Ewout Knoester"
+date: "30/03/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+rm(list=ls()) # Clear workspace
+knitr::opts_knit$set(root.dir = '/tmp') #Set directory at current directory for all subsequent chunks
+options(scipen = 50) # Have all numbers in non-scientific notation
+
+library(car) # ANOVA results
+library(data.table) # Data table
+library(emmeans) # Pairwise comparisons
+library(ggthemes) # pretty plots
+library(NCmisc) # Check packages used
+library(nlme) # GLS
+library(plyr) # Join (vlookup)
+library(readxl) # Import excel sheets
+library(tidyverse) # Data manipulation and plotting
+library(writexl) # Export Excel
+
+data_summary <- function(data, varname, groupnames){
+  require(plyr)
+  summary_func <- function(x, col){
+    c(sum = sum(x[[col]]),
+      mean = mean(x[[col]], na.rm=TRUE),
+      sd = sd(x[[col]], na.rm=TRUE),
+      n  = length(x[[col]]),
+      se = sd(x[[col]], na.rm=TRUE)/sqrt(length(x[[col]])))
+  }
+  data_sum<-ddply(data, groupnames, .fun=summary_func,
+                  varname)
+  data_sum <- plyr::rename(data_sum, c("mean" = varname))
+ return(data_sum)
+}
+
+```
+
+# Load & organize data
+<!--
+Data info:
+  Data collected by 
+-->
+
+# Select data for archiving
+```{r data selection}
+
+# Load raw data
+db0.raw <- read_excel("Raw data/Predation assays_01_RAW.xlsx", sheet = 1)
+
+# Select relevant columns
+db1.clean <- db0.raw[c(1, 2, 3, 7, 10)]
+
+# Select relevant data
+db1.clean <- db1.clean %>% 
+  filter(!grepl('Control', Location)) # Exclude controls
+db1.clean <- db1.clean %>% drop_na(Location) # Drop NAs
+
+# EXPORT DATA SELECTION
+write_xlsx(db1.clean, "Predation assay_Predation pressure restoration.xlsx")
+```
+
+# Data cleaning
+```{r data cleaning}
+db1.clean <- read_excel("Predation assay_Predation pressure restoration.xlsx", sheet = 1) #
+
+#! CHOICE of Species
+db2.snail <- subset(db1.clean, Species == "Coralliophila violacea" | Species == "Drupella cornus")
+
+# Quick summary for COTS (not further used)
+db2.cots <- subset(db1.clean, Species == "Acanthaster planci")
+db2.cots.loc <- data_summary(db2.cots, varname = "Consumed.pct", groupnames = c("Location"))
+
+#! CHOICE of Observer: chosen to also include the few observations of Sophie for Snails
+db2.snail <- subset(db2.snail, Observer == "Sophie de Reus" |Observer == "Sofia Kolkman")
+
+# Drop columns
+db2.snail <- db2.snail[-c(3)]
+
+# Set variables
+db2.snail$Species <- as.factor(db2.snail$Species)
+
+db2.snail$Location <- as.factor(ifelse(db2.snail$Location  == "Firefly", 1,
+                  ifelse(db2.snail$Location  == "Pilli Pipa", 2, 
+                   ifelse(db2.snail$Location  == "Lower Mpunguti", 3, 
+                    ifelse(db2.snail$Location  == "Dolphin Point", 4, 
+                     ifelse(db2.snail$Location  == "Kisite", 5, 6))))))
+
+db2.snail$Protection <- as.factor(ifelse(db2.snail$Location  == 1, "Fished",
+                  ifelse(db2.snail$Location  == 2, "Fished", 
+                   ifelse(db2.snail$Location  == 3, "Reserve", 
+                    ifelse(db2.snail$Location  == 4, "Reserve", 
+                     ifelse(db2.snail$Location  == 5, "No-take", "No-take"))))))
+db2.snail$Protection <- factor(db2.snail$Protection, ordered = TRUE, levels = c("Fished", "Reserve", "No-take"))
+
+db2.snail.loc <- data_summary(db2.snail, varname = "Consumed.pct", groupnames = c("Protection", "Location"))
+
+```
+# Model
+```{r}
+
+# Simple model
+snail1  <- gls(Consumed.pct ~ Location*Species, data = db2.snail)
+
+# Allowing for heterogeneity among Locations improves residuals
+snail1.w  <- gls(Consumed.pct ~ Location*Species, weights = varIdent(form = ~ 1|Location), data = db2.snail)
+
+# Output
+car::Anova(snail1.w)
+
+```
+
+# Model validation
+```{r model validation}
+
+mod <- snail1.w # set model to be validated
+op <- par(mfrow = c(2, 3), mar = c(5, 4, 1, 2)) # set layout of figure frame
+plot(resid(mod, type = "pearson") ~ fitted(mod)) # fitted vs residuals
+abline(0,0)
+hist(resid(mod, type = "pearson"), main = "") # histogram residuals
+qqnorm(resid(mod, type = "pearson")) # QQplot residuals
+plot(db2.snail$Location, resid(mod, type = "pearson")) # residuals split over Date
+abline(0,0)
+plot(fitted(mod) ~ db2.snail$Consumed.pct) # response data vs fitted
+par(op)
+
+```
+# Post hoc
+```{r post hoc}
+
+# FACULTATIVES
+hsd.snail <- emmeans(snail1.w, specs = pairwise ~ Location, adjust = "tukey", type = "response")
+
+```
+
+
+# Plotting
+```{r plotting}
+
+# FACULTATIVE
+## By Study Location
+### Post hoc letters
+sigletters.snail <- multcomp::cld(hsd.snail$emmeans, alpha = 0.05, Letters = letters, reversed = TRUE) # get CLD
+
+### Make order match with summary dataframe
+sigletters.snail <- sigletters.snail[order(sigletters.snail$Location),]
+sigletters.snail <- sigletters.snail %>% dplyr::mutate(.group = str_squish(.group)) # remove white spaces
+
+### Merge sig.letter dataframe into the summary dataframe
+db2.snail.loc.fig <- cbind(db2.snail.loc, siglet.loc = sigletters.snail$.group)
+
+### Plot
+ggplot(db2.snail.loc.fig, aes(x = Location, y = Consumed.pct))+
+  geom_bar(stat = "identity", position = position_dodge())+ 
+  facet_wrap(~ Protection, scales="free_x")+
+  labs(y = "Snails predated (%)", x = "Study site")+
+  scale_y_continuous(limits = c (0, 55), expand = c(0,0))+
+  geom_errorbar(aes(ymin=ifelse(Consumed.pct - se < 0,0, Consumed.pct-(1*se)), ymax=Consumed.pct+(1*se)), width=.2, position=position_dodge(.9))+
+  geom_text(data = db2.snail.loc.fig, aes(x=Location, y = Consumed.pct + (1*se), label = siglet.loc), 
+            vjust= -0.8, hjust = 0.5, size = 5, fontface = "bold", position=position_dodge(.9))+
+  scale_x_discrete(expand = c(0, 0.7))+
+  theme_economist()+scale_colour_economist()+
+  theme(
+    panel.margin.y = unit(0, "cm"),
+    strip.text.x = element_text(size = 14, face = "bold", vjust = 2, margin = margin(0.2, 0, 0.1, 0, "cm")),
+    strip.background = element_blank(),
+    axis.title.x = element_text(color="black", vjust=-2, size = 14),
+    axis.text.x = element_text(angle = 0, size=12, face = "bold", vjust=0.5),
+    axis.title.y = element_text(color="black" , vjust=4, size = 14),
+    axis.text.y=element_text(size=12, face = "bold", vjust=0.4),
+    plot.margin = margin(t = 10, r = 40,  b = 25,  l = 20),
+    panel.background = element_rect(fill = "#FCFCFC"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    panel.grid.major = element_line(colour = "#797979", size = 0.3),
+    axis.ticks = element_blank()
+    )
+#ggsave("Snail predation x Location.tiff", width = 23, height = 11, units = "cm", dpi=1200, compression = "lzw")
+
+```
+
+# Save summary data to Excel for correlations
+```{r corexcel}
+
+db2.snail.loc.excel <- select(db2.snail.loc.fig, -c('sum', 'sd'))
+colnames(db2.snail.loc.excel)[which(names(db2.snail.loc.excel) == "Consumed.pct")] <- "Snails.predated"
+write_xlsx(db2.snail.loc.excel,"Correlation data/Correlations_Snail predation.xlsx")
+
+```
+
+# Check packages used
+```{r}
+
+knitr::purl("fishspecies.Rmd")
+list.functions.in.file("fishspecies.R")
+unlink("fishspecies.R")
+
+```

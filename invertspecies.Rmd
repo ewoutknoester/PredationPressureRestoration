@@ -12,84 +12,294 @@ rm(list=ls()) # Clear workspace
 knitr::opts_knit$set(root.dir = '/tmp') #Set directory at current directory for all subsequent chunks
 options(scipen = 50) # Have all numbers in non-scientific notation
 
-library(plyr) # Join (vlookup)
-library(tidyverse) # Data manipulation and plotting
-library(readxl) # Import excel sheets
-library(htmlTable) # Data table
+library(car) # ANOVA results
+library(data.table) # Data table
+library(emmeans) # Pairwise comparisons
 library(ggthemes) # pretty plots
+library(NCmisc) # Check packages used
+library(nlme) # GLS
+library(panelr) # wide to long
+library(plyr) # Join (vlookup)
+library(readxl) # Import excel sheets
+library(tidyverse) # Data manipulation and plotting
+library(writexl) # Export Excel
+
+data_summary <- function(data, varname, groupnames){
+  require(plyr)
+  summary_func <- function(x, col){
+    c(sum = sum(x[[col]]),
+      mean = mean(x[[col]], na.rm=TRUE),
+      sd = sd(x[[col]], na.rm=TRUE),
+      n  = length(x[[col]]),
+      se = sd(x[[col]], na.rm=TRUE)/sqrt(length(x[[col]])))
+  }
+  data_sum<-ddply(data, groupnames, .fun=summary_func,
+                  varname)
+  data_sum <- plyr::rename(data_sum, c("mean" = varname))
+ return(data_sum)
+}
 
 ```
 
-# Load & organize data
+# Data selection (preparing dataset for archiving & sharing)
+```{r data selection}
+
+# RAW data all surveys (INVERTEBRATES)
+## load first xls sheet
+df0.raw <- read_excel("Raw data/Benthic surveys_2022-03.xlsx", sheet = 6)
+
+## Convert to long dataframe
+df1.clean <- as.data.frame(panelr::long_panel(df0.raw, prefix = "_P", begin = 1, end = 300, label_location = "end"))
+
+# Cleanup
+df1.clean <- df1.clean[order(df1.clean$wave),]
+df1.clean <- select(df1.clean, -c('id', 'Group', 'Comments'))
+colnames(df1.clean)[which(names(df1.clean) == "Survey")] <- "Abundance"
+colnames(df1.clean)[which(names(df1.clean) == "wave")] <- "Survey"
+df1.clean$Abundance[is.na(df1.clean$Abundance)] <- 0 # Set NAs to zeros
+
+# Set species names
+df1.clean$Species[df1.clean$Species ==  "Coralliophila sp."] <- "Coralliophila"
+df1.clean$Species[df1.clean$Species ==  "Drupella sp."] <- "Drupella"
+df1.clean$Species[df1.clean$Species ==  "Acanthaster planci"] <- "Acanthaster"
+df1.clean$Species[df1.clean$Species ==  "Culcita schmideliana"] <- "Culcita"
+df1.clean$Species[df1.clean$Species ==  "Culcita sp."] <- "Culcita"
+
+# Sum so the two Culcitas get added together
+df1.clean <- df1.clean %>%
+        dplyr::group_by(Survey, Species) %>%
+        dplyr::summarise(Abundance = sum(Abundance))
+
+# Subset corallivores
+df1.clean <- subset(df1.clean, Species == "Coralliophila" | Species == "Drupella" | Species == "Acanthaster"  | Species == "Culcita")
+
+# META data all surveys
+## Load Excel
+meta <- read_excel("Raw data/Benthic surveys_2022-03.xlsx", sheet = 2)
+meta$Survey <- sub(".", "", meta$Survey)
+meta$Survey  = str_remove(meta$Survey, "^0+")
+
+# Change Location names into numbers
+meta$Location <- as.factor(ifelse(meta$Location  == 'Firefly', 1,
+                  ifelse(meta$Location  == 'Pilli Pipa', 2, 
+                   ifelse(meta$Location  == 'Lower Mpunguti', 3, 
+                    ifelse(meta$Location  == 'Dolphin Point', 4, 
+                     ifelse(meta$Location  == 'Wasini', 6, 5))))))
+
+### Set Protection per Location
+meta$Protection <- as.factor(ifelse(meta$Location  == 1, "Fished",
+                  ifelse(meta$Location  == 2, "Fished", 
+                   ifelse(meta$Location  == 3, "Reserve", 
+                    ifelse(meta$Location  == 4, "Reserve", 
+                     ifelse(meta$Location  == 5, "No-take", "No-take"))))))
+
+### Selection criteria
+### Selection criteria: use metadata to select surveys for current experiment
+meta$Select <- ifelse(meta$Transect  == "NA", 1, 0) # Select random (non-permanent) transects
+###! Choice: only select Nienke's: neat setup (n = 10 for all) and little difference in results from Nienke + Sophie's data
+meta$Select <- ifelse(meta$Select == 1 & meta$Observer  == "Nienke Klerks, Sofia Kolkman", 1, 0) # Select surveys by Nienke
+
+## Apply selection
+df2.selex <- df1.clean[df1.clean$Survey %in% c(unlist(na.omit(meta$Survey[meta$Select == 1]))),]
+
+# MERGE DATA AND META
+meta.mini <- select(meta, c('Survey', 'Date', 'Protection', 'Location'))
+df2.selex <- merge(df2.selex, meta.mini, by = 'Survey')
+
+# EXPORT DATA SELECTION
+write_xlsx(df2.selex,"Benthic surveys_2022-03_Predation pressure restoration_Invertebrates.xlsx")
+
+```
+
+# Data cleaning 
 <!--
-Data info:
-  Data collected by Nienke Klerks & Sofia Kolkman
-  Abundance of invertebrates for different transect widths:
-  >>> Corallivorous snails (1 x 20 m) = 20 m2
-  >>> Corallivorous sea starts (5 x 20 m) = 100 m2
+Data info benthic surveys:
+  Study sites: 1 (Firefly), 2 (Pilli Pipa), 3 (Lower Mpunguti), 4 (Dolphin Point), 5 (Kisite) & 6 (Wasini)
+  Study sites either in: Fished (open fishing area), Reserve (traditional methods only) or enforced No-take zone
   
+
+HARD CORAL COVER:
+  Data of 20-m point intercept surveys (sampled every 0.5 m) at various study sites
+  Dead corals were classified as Dead when the genus could still be recognized or as Bare rock when not
+  State of coral colony tissue right below point intercept was scored either as: Healthy, Bleached, Diseased, Broken or Dead
+
+INVERTEBRATES:
+  Abundance (counts) of invertebrates for different transect widths:
+    Corallivorous snails (1 x 20 m) = 20 m2
+    Corallivorous sea stars (5 x 20 m) = 100 m2
 -->
+```{r data cleaning}
 
-```{r}
+# Load data
+df1.hc <- read_excel("Benthic surveys_2022-03_Predation pressure restoration_Benthic cover.xlsx", sheet = 1) # Coral cover
+df1.in <- read_excel("Benthic surveys_2022-03_Predation pressure restoration_Invertebrates.xlsx", sheet = 1) # Invertebrates
 
-# Load raw data
-db.0raw <- read_excel("Benthic surveys_DATABASE_04_Selection.xlsx", sheet = "Data")
+# --- TOTAL HARD CORAL COVER ---
+## Group dead corals into bare rock, bare substrate
+df1.hc$Group <- ifelse(df1.hc$State  == "dead" & !is.na(df1.hc$State), "Bare.rock", df1.hc$Group)
 
-# Select relevant columns
-db.1clean <- db.0raw[c(3, 19, 39, 40, 44, 45)]
-db.1clean$Site <- as.factor(db.1clean$Site)
+df1.hc <- select(df1.hc, c('Survey', 'Protection', 'Location', 'Group'))
+df1.hc$Group <- as.factor(df1.hc$Group)
 
-# Convert abundances to densities
-db.2 <- as.data.frame(append(db.1clean, list(COTS.density = db.1clean$COTS.abundance / 100 * 10000, # /ha
-                                             Culcita.density = db.1clean$Culcita.abundance / 100 * 10000, # /ha
-                                             Coralliophila.density = db.1clean$Coralliophila.abundance / 20, # /m2
-                                             Drupella.density = db.1clean$Drupella.abundance / 20)))
+# Get counts of hard coral per survey per location
+df2.hc.sur <- df1.hc %>%
+        dplyr::group_by(Survey, Protection, Location, Group, .drop = FALSE) %>%
+        dplyr::tally()
 
-# Convert snail density per meter of reef (/m2) to density per meter of coral (/m2 coral)
+df2.hc.sur <- subset(df2.hc.sur, Group == "Hard.coral") # Select hard coral only
+df2.hc.sur$n <- df2.hc.sur$n/41 * 100
+colnames(df2.hc.sur)[which(names(df2.hc.sur) == "n")] <- "Coral.cover"
 
 ## Set minimum coral cover at 5% to prevent division by zero
-db.2$Hard.coral.pct <- ifelse(db.2$Hard.coral.pct < 5, 5, db.2$Hard.coral.pct)
+df2.hc.sur$Coral.cover <- ifelse(df2.hc.sur$Coral.cover < 2, 2, df2.hc.sur$Coral.cover)
 
-## Calculate densities
-db.2 <- as.data.frame(append(db.2,
-        list(Coralliophila.densitycoral = db.2$Coralliophila.density / (db.2$Hard.coral.pct/100), # /m2 coral
-             Drupella.densitycoral = db.2$Drupella.density / (db.2$Hard.coral.pct/100)))) # /m2 coral
+# --- SNAIL DENSITIES ---
+df2.in.cor <- subset(df1.in, Species == "Coralliophila") 
+df2.in.dru <- subset(df1.in, Species == "Drupella")
 
-# Select relevant columns
-db.2 <- db.2[c(1, 7, 8, 11, 12)]
+# Convert abundance into density (divide by survey area of 20 m2, standardize to square meter)
+df2.in.cor$Density  <- df2.in.cor$Abundance / 20
+df2.in.dru$Density  <- df2.in.dru$Abundance / 20
 
-# Average Densities per Site
-db.2avg <- db.2  %>%  
-  group_by(Site) %>% 
-  dplyr::summarise(COTS = mean(COTS.density, na.rm = TRUE),
-                   Culcita = mean(Culcita.density, na.rm = TRUE),
-                   Coralliophila = mean(Coralliophila.densitycoral, na.rm = TRUE),
-                   Drupella = mean(Drupella.densitycoral, na.rm = TRUE))
+# Merge with hard coral data set to enable further standardization density to square meter of coral
+## Coralliophila
+df2.in.cor <- merge(df2.in.cor, df2.hc.sur, by = 'Survey')
+df2.in.cor$cor.m2coral <- df2.in.cor$Density / (df2.in.cor$Coral.cover/ 100)
+df2.in.cor <- select(df2.in.cor, c('Survey', 'Protection.x', 'Location.x', 'cor.m2coral'))
+colnames(df2.in.cor)[which(names(df2.in.cor) == "Protection.x")] <- "Protection"
+colnames(df2.in.cor)[which(names(df2.in.cor) == "Location.x")] <- "Location"
 
-# Sum of both corallivorous snails
-db.2avg <- as.data.frame(append(db.2avg, list(Snails = db.2avg$Coralliophila + db.2avg$Drupella)))
+## Drupella
+df2.in.dru <- merge(df2.in.dru, df2.hc.sur, by = 'Survey')
+df2.in.dru$dru.m2coral <- df2.in.dru$Density / (df2.in.dru$Coral.cover/ 100)
+df2.in.dru <- select(df2.in.dru, c('Survey', 'Protection.x', 'Location.x', 'dru.m2coral'))
+colnames(df2.in.dru)[which(names(df2.in.dru) == "Protection.x")] <- "Protection"
+colnames(df2.in.dru)[which(names(df2.in.dru) == "Location.x")] <- "Location"
 
-# Wide to long
-db.2avg <- gather(db.2avg, Species, Density, COTS:Snails, factor_key=TRUE)
+# Both snails
+df2.in.snails <- merge(df2.in.cor, df2.in.dru, by = 'Survey')
+df2.in.snails$Snails.m2coral <- df2.in.snails$cor.m2coral + df2.in.snails$dru.m2coral
+colnames(df2.in.snails)[which(names(df2.in.snails) == "Protection.x")] <- "Protection"
+colnames(df2.in.snails)[which(names(df2.in.snails) == "Location.x")] <- "Location"
 
-# Select snails
-db.3Snail <- subset(db.2avg, Species == "Coralliophila" | Species == "Drupella" )
+# Average per location
+df2.in.snails.loc <- data_summary(df2.in.snails, varname = "Snails.m2coral", groupnames = c("Protection","Location"))
+df2.in.snails.loc$Protection <- factor(df2.in.snails.loc$Protection, ordered = TRUE, levels = c("Fished", "Reserve", "No-take"))
 
-# Order, so that Coralliophila comes first (at bottom in graph)
-db.3Snail$Species <- factor(db.3Snail$Species, ordered = T, levels = c("Drupella", "Coralliophila"))
+# Split for stacked bar graph
+## Wide to long
+df2.in.snails.stack <- select(df2.in.snails, c('Survey', 'Protection', 'Location', 'cor.m2coral', 'dru.m2coral'))
+df2.in.snails.stack <- gather(df2.in.snails.stack, Species, Density, cor.m2coral:dru.m2coral, factor_key=TRUE)
+
+# Set names
+levels(df2.in.snails.stack$Species) <- c("Coralliophila", "Drupella")
+
+df2.in.snails.stack.loc <- data_summary(df2.in.snails.stack, varname = "Density", groupnames = c("Protection", "Location", "Species"))
+df2.in.snails.stack.loc$Protection <- factor(df2.in.snails.stack.loc$Protection, ordered = TRUE, levels = c("Fished", "Reserve", "No-take"))
+
+# --- STAR DENSITIES ---
+df2.in.cots <- subset(df1.in, Species == "Acanthaster") # Select COTS
+df2.in.cul <- subset(df1.in, Species == "Culcita") # Select COTS
+
+# Convert abundance into density (divide by survey area of 100 m2, standardize to hectare)
+df2.in.cots$Density  <- df2.in.cots$Abundance / 100 * 10000
+df2.in.cul$Density  <- df2.in.cul$Abundance / 100 * 10000
+
+# Summarize per location
+df2.in.cots.loc <- data_summary(df2.in.cots, varname = "Density", groupnames = c("Protection","Location"))
+df2.in.cul.loc <- data_summary(df2.in.cul, varname = "Density", groupnames = c("Protection","Location"))
 
 ```
+
+# Model
+```{r model}
+
+# Simple model
+snails1  <- gls(Snails.m2coral ~ Location, data = df2.in.snails)
+
+# Allowing for heterogeneity among Locations improves residuals
+snails1.w  <- gls(Snails.m2coral ~ Location, weights = varIdent(form = ~ 1|Location), data = df2.in.snails)
+
+# Output
+car::Anova(snails1.w)
+
+```
+
+# Model validation
+```{r model validation}
+
+mod <- snails1.w # set model to be validated
+op <- par(mfrow = c(2, 3), mar = c(5, 4, 1, 2)) # set layout of figure frame
+plot(resid(mod, type = "pearson") ~ fitted(mod)) # fitted vs residuals
+abline(0,0)
+hist(resid(mod, type = "pearson"), main = "") # histogram residuals
+qqnorm(resid(mod, type = "pearson")) # QQplot residuals
+plot(df2.in.snails$Location, resid(mod, type = "pearson")) # residuals split over Date
+abline(0,0)
+plot(fitted(mod) ~ df2.in.snails$Snails.m2coral) # response data vs fitted
+par(op)
+
+```
+
+# Post hoc
+```{r post hoc}
+
+hsd <- emmeans(snails1.w, specs = pairwise ~ Location, adjust = "tukey", type = "response")
+
+```
+
 
 # Plotting
 ```{r plotting}
 
-# Stacked bar Corallivorous snails
-ggplot(db.3Snail, aes(fill=Species, y=Density, x=Site)) + 
+# By Study Location
+## Post hoc letters
+sigletters <- multcomp::cld(hsd$emmeans, alpha = 0.05, Letters = letters, reversed = FALSE) # get CLD
+sigletters <- sigletters %>% dplyr::mutate(.group = str_squish(.group)) # remove white spaces
+
+## Merge sig.letter dataframe into the summary dataframe
+sigletters <- sigletters[order(sigletters$Location),] # Make order match with summary dataframe
+df2.in.snails.loc <- df2.in.snails.loc[order(df2.in.snails.loc$Location),] # Make order match
+df2.in.snails.loc <- cbind(df2.in.snails.loc, siglet.loc = sigletters$.group)
+
+## Plot
+ggplot(df2.in.snails.loc, aes(x = Location, y = Snails.m2coral))+
+  geom_bar(stat = "identity", position = position_dodge())+ 
+  facet_wrap(~ Protection, scales="free_x")+
+  labs(y = expression(paste("Snail density (", m^-2," coral)")), x = "Study site")+
+  scale_y_continuous(limits = c (0, 6), breaks = c(0, 2, 4, 6), expand = c(0,0))+
+  geom_errorbar(aes(ymin=ifelse(Snails.m2coral - se < 0,0, Snails.m2coral-(1*se)), ymax=Snails.m2coral+(1*se)), width=.2, position=position_dodge(.9))+
+  geom_text(data = df2.in.snails.loc, aes(x=Location, y = Snails.m2coral + (1*se), label = siglet.loc), 
+            vjust= -0.8, hjust = 0.5, size = 5, fontface = "bold", position=position_dodge(.9))+
+  scale_x_discrete(expand = c(0, 0.7))+
+  theme_economist()+scale_colour_economist()+
+  theme(
+    panel.margin.y = unit(0, "cm"),
+    strip.text.x = element_text(size = 14, face = "bold", vjust = 2, margin = margin(0.2, 0, 0.1, 0, "cm")),
+    strip.background = element_blank(),
+    axis.title.x = element_text(color="black", vjust=-2, size = 14),
+    axis.text.x = element_text(angle = 0, size=12, face = "bold", vjust=0.5),
+    axis.title.y = element_text(color="black" , vjust=4, size = 14),
+    axis.text.y=element_text(size=12, face = "bold", vjust=0.4),
+    plot.margin = margin(t = 10, r = 40,  b = 25,  l = 20),
+    panel.background = element_rect(fill = "#FCFCFC"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    panel.grid.major = element_line(colour = "#797979", size = 0.3),
+    axis.ticks = element_blank()
+    )
+#ggsave("Snails x Location.tiff", width = 23, height = 11, units = "cm", dpi=1200, compression = "lzw")
+
+# Stacked bar both corallivorous snails
+ggplot(df2.in.snails.stack.loc, aes(fill= forcats::fct_rev(Species), y=Density, x=Location)) + 
     geom_bar(position="stack", stat="identity")+
+    facet_wrap(~ Protection, scales="free_x")+
+    scale_y_continuous(limits = c (0, 4))+
     scale_fill_manual(values = c( "#999999", "#323232"))+
-    labs(y = expression(paste("Snail density ( ", m^-2," coral)")), x = "Study site")+
+    labs(y = expression(paste("Snail density ( ", m^-2," coral)")), x = "Study site", fill = "Genus")+
     theme_economist()+
     theme(
+      strip.text.x = element_text(size = 14, face = "bold", vjust = 2, margin = margin(0.2, 0, 0.1, 0, "cm")),
+      panel.margin.y = unit(0, "cm"),
       axis.title.x = element_text(color="black", vjust=-2, size = 14),
       axis.text.x=element_text(size=12, face = "bold", vjust=0.5, hjust=0),
       axis.title.y = element_text(color="black" , vjust=4, size = 14),
@@ -99,8 +309,23 @@ ggplot(db.3Snail, aes(fill=Species, y=Density, x=Site)) +
       plot.background = element_rect(fill = "#FFFFFF"),
       panel.grid.major = element_line(colour = "#797979", size = 0.3)
       )
-ggsave("Snails.tiff", width = 23, height = 10, units = "cm", dpi=1200, compression = "lzw")
+ggsave("Inverspecies_Snails.tiff", width = 23, height = 10, units = "cm", dpi=1200, compression = "lzw")
 
 ```
 
+# Save summary data to Excel for correlations
+```{r corexcel}
 
+df2.in.snails.loc.excel <- select(df2.in.snails.loc, -c('sum', 'sd'))
+write_xlsx(df2.in.snails.loc.excel,"Correlation data/Correlations_Snails.xlsx")
+
+```
+
+# Check packages used
+```{r}
+
+knitr::purl("fishspecies.Rmd")
+list.functions.in.file("fishspecies.R")
+unlink("fishspecies.R")
+
+```

@@ -1,0 +1,380 @@
+---
+title: "benthic"
+author: "Ewout Knoester"
+date: "15/02/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+rm(list=ls()) # Clear workspace
+knitr::opts_knit$set(root.dir = '/tmp') #Set directory at current directory for all subsequent chunks
+options(scipen = 50) # Have all numbers in non-scientific notation
+
+library(car) # Anovas
+library(cowplot) # Plot grid
+library(data.table)
+library(emmeans) # Pairwise comparisons
+library(ggthemes) # pretty plots
+library(NCmisc) # Check packages used
+library(nlme) # GLS
+library(panelr) # Convert data from wide to long
+library(plyr) # Join (vlookup)
+library(readxl) # Import excel sheets
+library(tidyverse) # Data manipulation and plotting
+library(writexl) # Export Excel
+
+data_summary <- function(data, varname, groupnames){
+  require(plyr)
+  summary_func <- function(x, col){
+    c(sum = sum(x[[col]]),
+      mean = mean(x[[col]], na.rm=TRUE),
+      sd = sd(x[[col]], na.rm=TRUE),
+      n  = length(x[[col]]),
+      se = sd(x[[col]], na.rm=TRUE)/sqrt(length(x[[col]])))
+  }
+  data_sum<-ddply(data, groupnames, .fun=summary_func,
+                  varname)
+  data_sum <- plyr::rename(data_sum, c("mean" = varname))
+ return(data_sum)
+}
+
+```
+
+# Data selection (preparing dataset for archiving & sharing)
+```{r data selection}
+
+# RAW data all surveys (HARD CORAL COVER)
+## load first xls sheet
+df0.raw <- read_excel("Raw data/Benthic surveys_2022-03.xlsx", sheet = 3, skip = 1)
+
+## combining next sheets of excel file
+for (i in 4:5) {
+  temp <- read_excel("Raw data/Benthic surveys_2022-03.xlsx", sheet = i, skip = 1)
+  df0.raw <- cbind(df0.raw, temp)
+}
+
+## Remove duplicate columns
+df1.clean <- df0.raw[-c(802, 1603)]
+
+## Convert to long dataframe
+df1.clean <- as.data.frame(long_panel(df1.clean, prefix = "_", begin = 1, end = 300, label_location = "end"))
+df1.clean <- df1.clean[order(df1.clean$wave),]
+
+# META data all surveys
+## Load Excel
+meta <- read_excel("Raw data/Benthic surveys_2022-03.xlsx", sheet = 2)
+meta$Survey <- sub(".", "", meta$Survey)
+meta$Survey  = str_remove(meta$Survey, "^0+")
+
+# Change Location names into numbers
+meta$Location <- as.factor(ifelse(meta$Location  == 'Firefly', 1,
+                  ifelse(meta$Location  == 'Pilli Pipa', 2, 
+                   ifelse(meta$Location  == 'Lower Mpunguti', 3, 
+                    ifelse(meta$Location  == 'Dolphin Point', 4, 
+                     ifelse(meta$Location  == 'Wasini', 6, 5))))))
+
+### Set Protection per Location
+meta$Protection <- as.factor(ifelse(meta$Location  == 1, "Fished",
+                  ifelse(meta$Location  == 2, "Fished", 
+                   ifelse(meta$Location  == 3, "Reserve", 
+                    ifelse(meta$Location  == 4, "Reserve", 
+                     ifelse(meta$Location  == 5, "No-take", "No-take"))))))
+
+# SELECTION
+## Selection criteria: use metadata to select surveys for current experiment
+meta$Select <- ifelse(meta$Transect  == "NA", 1, 0) # Select random (non-permanent) transects
+###! Choice: only select Nienke's: neat setup (n = 10 for all) and little difference in results from Nienke + Sophie's data
+meta$Select <- ifelse(meta$Select == 1 & meta$Observer  == "Nienke Klerks, Sofia Kolkman", 1, 0) # Select surveys by Nienke
+
+## Apply selection
+df2.selex <- df1.clean[df1.clean$wave %in% c(unlist(na.omit(meta$Survey[meta$Select == 1]))),]
+
+# Cleanup
+df2.selex <- select(df2.selex, -c('id'))
+names(df2.selex)[1] <- "Survey" 
+
+# MERGE DATA AND META
+meta.mini <- select(meta, c('Survey', 'Date', 'Protection', 'Location'))
+df2.selex <- merge(df2.selex, meta.mini, by = 'Survey')
+
+# EXPORT DATA SELECTION
+write_xlsx(df2.selex,"Benthic surveys_2022-03_Predation pressure restoration_Benthic cover.xlsx")
+
+```
+
+# Data cleaning 
+<!--
+Data info:
+  Data of 20-m point intercept surveys (sampled every 0.5 m) at various study sites
+  Study sites: 1 (Firefly), 2 (Pilli Pipa), 3 (Lower Mpunguti), 4 (Dolphin Point), 5 (Kisite) & 6 (Wasini)
+  Study sites either in: Fished (open fishing area), Reserve (traditional methods only) or enforced No-take zone
+  State of coral colony tissue right below point intercept was scored either as: Healthy, Bleached, Diseased, Broken or Dead
+  Dead corals were classified as Dead when the genus could still be recognized or as Bare rock when not
+-->
+```{r data cleaning}
+
+# Load data
+df2.selex <- read_excel("Benthic surveys_2022-03_Predation pressure restoration_Benthic cover.xlsx", sheet = 1)
+
+# Set variables
+df2.selex$Survey <- as.factor(df2.selex$Survey)
+df2.selex$Location <- as.factor(df2.selex$Location)
+df2.selex$Protection <- factor(df2.selex$Protection, ordered = TRUE, levels = c("Fished", "Reserve", "No-take"))
+
+# GROUPING
+## Group dead corals into bare rock, bare substrate
+df2.selex$Group <- ifelse(df2.selex$State  == "dead" & !is.na(df2.selex$State), "Bare.rock", df2.selex$Group)
+df2.selex$Super.group <- ifelse(df2.selex$State  == "dead" & !is.na(df2.selex$State), "Bare substrate", df2.selex$Super.group)
+
+## Set groups
+df2.selex$Super.group <- ifelse(df2.selex$Group  == "Algae", "Macroalgae", df2.selex$Super.group)
+df2.selex$Super.group <- ifelse(df2.selex$Group  == "Bare.rock", "Hard substrate", df2.selex$Super.group)
+df2.selex$Super.group <- ifelse(df2.selex$Group  == "Turf.algae", "Hard substrate", df2.selex$Super.group)
+df2.selex$Super.group <- ifelse(df2.selex$Group  == "Seagrass", "Bare substrate", df2.selex$Super.group)
+df2.selex$Super.group <- ifelse(df2.selex$Group  == "Crustose.coralline.algae", "Hard substrate", df2.selex$Super.group)
+df2.selex$Super.group <- ifelse(df2.selex$Group  == "Hard.coral", "Hard coral", df2.selex$Super.group)
+df2.selex$Super.group <- ifelse(df2.selex$Group  == "Soft.coral", "Soft coral", df2.selex$Super.group)
+
+## Set remaining groups to 'Other'
+##df2.selex$Super.group <- as.factor(df2.selex$Super.group)
+df2.selex$Super.group <- ifelse(df2.selex$Super.group  == "Cnidaria" | df2.selex$Group  == "Cyanobacteria" | df2.selex$Group  == "Sponge" | df2.selex$Group  == "Tunicate", "Other", df2.selex$Super.group)
+
+# Set grouping variables as factor
+df2.selex$Genus <- as.factor(df2.selex$Genus)
+df2.selex$Group <- as.factor(df2.selex$Group)
+df2.selex$Super.group <- as.factor(df2.selex$Super.group)
+
+# SUBSETS
+# --- BENTHIC COVER ---
+df3.BC <- select(df2.selex, c('Survey', 'Location', 'Protection', 'Super.group'))
+
+# Get counts per Survey
+df3.BC <- df3.BC %>%
+        group_by(Survey, Location, Protection, Super.group) %>%
+        tally()
+
+# Divide counts by total of points on point intercept transect (= 41) to get cover in percentage
+df3.BC$n <- df3.BC$n/41*100
+colnames(df3.BC)[which(names(df3.BC) == "Super.group")] <- "Substrate"
+colnames(df3.BC)[which(names(df3.BC) == "n")] <- "Cover"
+
+# Get number of surveys
+df3.BC.count <- df3.BC %>%
+        dplyr::group_by(Location) %>%
+        dplyr::summarise(Sum = sum(Cover))
+df3.BC.count$Sum <- df3.BC.count$Sum/100 # Divide by percentage to get number of surveys
+colnames(df3.BC.count)[which(names(df3.BC.count) == "Sum")] <- "Surveys"
+
+# Get averages by dividing total percentage by number of surveys
+df3.BC.sum <- df3.BC %>%
+        dplyr::group_by(Protection, Location, Substrate) %>%
+        dplyr::summarise(Sum = sum(Cover))
+df3.BC.sum <- merge(df3.BC.sum, df3.BC.count, by = 'Location')
+df3.BC.sum$Cover <- df3.BC.sum$Sum/df3.BC.sum$Surveys
+df3.BC.sum <- select(df3.BC.sum, -c('Sum'))
+
+# Set order of substrates
+df3.BC.sum$Substrate <- factor(df3.BC.sum$Substrate,  levels=c("Bare substrate", "Hard substrate", "Other", "Macroalgae", "Soft coral", "Hard coral"))
+
+# --- TOTAL HARD CORAL COVER ---
+df3.HC <- select(df2.selex, c('Survey', 'Protection', 'Location', 'Genus', 'Super.group'))
+
+# Get counts of hard coral per survey per location
+df3.HC.mod <- df3.HC %>%
+        dplyr::group_by(Survey, as.character(Protection), as.character(Location), Super.group, .drop = FALSE) %>%
+        dplyr::tally()
+df3.HC.mod <- subset(df3.HC.mod, Super.group == "Hard coral") # Select hard coral only
+df3.HC.mod$n <- df3.HC.mod$n/41 * 100
+colnames(df3.HC.mod)[which(names(df3.HC.mod) == "n")] <- "Cover"
+colnames(df3.HC.mod)[which(names(df3.HC.mod) == "as.character(Location)")] <- "Location"
+colnames(df3.HC.mod)[which(names(df3.HC.mod) == "as.character(Protection)")] <- "Protection"
+
+# Set as factors again
+df3.HC.mod$Location <- as.factor(df3.HC.mod$Location)
+df3.HC.mod$Protection <- factor(df3.HC.mod$Protection, ordered = TRUE, levels = c("Fished", "Reserve", "No-take"))
+
+df3.HC.mod.avg <- data_summary(df3.HC.mod, varname = "Cover", groupnames = c("Protection", "Location"))
+
+# --- COVER PER CORAL GENUS ---
+# Get counts per genus per Survey
+df3.HC.g <- select(df2.selex, c('Protection', 'Location', 'Survey', 'Genus', 'Super.group'))
+df3.HC.sum<- subset(df3.HC.g, Super.group == "Hard coral") # Select hard coral only
+df3.HC.sum <- df3.HC.sum %>%
+        dplyr::group_by(Protection, Location, Genus) %>%
+        dplyr::tally()
+
+# Get total counts (ie number of surveys x 41 points)
+df3.HC.count <- df3.HC.g %>%
+        dplyr::group_by(Location) %>%
+        dplyr::tally()
+colnames(df3.HC.count)[which(names(df3.HC.count) == "n")] <- "n.tot"
+
+# Get percentages by dividing counts by total counts
+df3.HC.sum <- merge(df3.HC.sum, df3.HC.count, by = 'Location')
+df3.HC.sum$Cover <- df3.HC.sum$n/ df3.HC.sum$n.tot * 100
+
+# Group uncommon coral together as Other
+df3.HC.sum.sum<- subset(df3.HC.g, Super.group == "Hard coral") # Select hard coral only
+df3.HC.sum.sum <- df3.HC.sum.sum %>%
+        dplyr::group_by(Genus) %>%
+        dplyr::tally()
+
+df3.HC.sum.sum$n <- df3.HC.sum.sum$n/sum(df3.HC.count$n.tot)*100 # Get average cover across all study sites
+df3.HC.sum.sum <- df3.HC.sum.sum[order(df3.HC.sum.sum$n, decreasing = TRUE),] # Order
+colnames(df3.HC.sum.sum)[which(names(df3.HC.sum.sum) == "n")] <- "Cover.avg"
+
+# Keep all genera with > 0.5% cover over study sites, group all other together
+df3.HC.sum <- merge(df3.HC.sum, df3.HC.sum.sum, by = 'Genus')
+df3.HC.sum$Genus <- ifelse(df3.HC.sum$Cover.avg > 0.5, as.character(df3.HC.sum$Genus), "Other")
+
+# Sum so that group Other is summed
+df3.HC.sum <- df3.HC.sum %>%
+        dplyr::group_by(Location, Genus) %>%
+        dplyr::summarise(Cover = sum(Cover))
+
+# Set order of genera
+df3.HC.sum$Genus <- factor(df3.HC.sum$Genus ,  levels=c("Acropora", "Porites", "Stylophora", "Astreopora", "Echinopora", "Galaxea", "Lobophyllia", "Montipora", "Pavona", "Platygyra", "Porites (massive)", "Other"))
+
+```
+# Models
+```{r models}
+
+# HARD CORAL
+gls.HC  <- gls(sqrt(Cover) ~ Location, data = df3.HC.mod)
+car::Anova(gls.HC)
+
+```
+
+# Model validation
+```{r SGR model validation}
+
+mod <- gls.HC # set model to be validated
+op <- par(mfrow = c(2, 4), mar = c(5, 4, 1, 2)) # set layout of figure frame
+plot(resid(mod, type = "pearson") ~ fitted(mod)) # fitted vs residuals
+abline(0,0)
+hist(resid(mod, type = "pearson"), main = "") # histogram residuals
+qqnorm(resid(mod, type = "pearson")) # QQplot residuals
+plot(df3.HC.mod$Location, resid(mod, type = "pearson")) # residuals split over Date
+abline(0,0)
+plot(fitted(mod) ~ df3.HC.mod$Cover) # response data vs fitted
+par(op)
+
+```
+# Post hoc
+```{r}
+hsd.HC <- emmeans(gls.HC, specs = pairwise ~ Location, adjust = "tukey", type = "response")
+```
+
+
+
+# Plotting
+```{r plotting}
+
+# BENTHIC COVER
+ggplot(df3.BC.sum, aes(fill = Substrate, y = Cover, x = Location)) + 
+    geom_bar(position="stack", stat="identity")+
+    scale_fill_manual(values = c("#D3D3D3", "#A1A1A1", "#FFD1FD", "#078A00", "#E5DA00", "#E58000"))+
+    labs(y = "Benthic cover (%)", x = "Study site")+
+    theme(
+      axis.title.x = element_text(color="black", vjust=-2, size = 14),
+      axis.text.x=element_text(size=12, face = "bold"),
+      axis.title.y = element_text(color="black" , vjust= 4, size = 14),
+      axis.text.y=element_text(size=12, face = "bold", vjust=0.5),
+      plot.margin = unit(c(0.5, 0.3, 0.5, 0.5), "cm")
+      )
+
+# HARD CORAL BY GENUS
+## Legend
+# Create dataframe for legend    
+dt <- data.table(x = 1, y = seq(1, 12, 1), z = factor(1:12))
+dt[ , grp := cut(as.numeric(z), breaks = c(0,9,12),
+                labels = c("Other", "Branching"))]
+dt2 <- dt[ , .(x = 1, y = min(y), yend = max(y), ymid = mean(y)), by = grp]
+dt3 <- data.table(x = 1, y = unlist(dt2[ , .(y, yend)]))
+v <- 0.3 # offset
+
+# Plot legend
+p2 <- ggplot(mapping = aes(x = x, y = y)) +
+  geom_point(data = dt, size = 5)+
+  geom_segment(data = dt2, aes(x = x + v, xend = x + v, yend = yend), colour = c("black"), size = 1)+
+  geom_segment(data = dt3, aes(x = x + v, xend = x + (v - 0.1), yend = y), size = 1, 
+    colour=c("black"))+
+  geom_text(data = dt2, aes(x = x + v + 0.4, y = ymid, label = grp), colour = c( "black"), size = 4, fontface = "bold", vjust = 0.3)+
+  scale_color_manual(values = "", guide = "none") +
+  scale_x_continuous(limits = c(1.2, 2))+
+  theme_void()+
+  theme(plot.margin = unit(c(0.1,0,0,-0.2), "cm"))
+
+## Get CLD
+letters.HC <- multcomp::cld(hsd.HC$emmeans, reversed = T, alpha = 0.05, Letters = letters) # get CLD
+letters.HC <- letters.HC[order(letters.HC$Location),]
+letters.HC <- letters.HC %>% mutate(.group = str_squish(.group)) # remove white spaces
+letters.HC <- select(letters.HC, -c('df', 'lower.CL', 'upper.CL'))
+
+# Merge CLD with Data
+df3.HC.sum <- merge(df3.HC.sum, df3.HC.mod.avg, by = 'Location')
+df3.HC.sum <- merge(df3.HC.sum, letters.HC, by = 'Location')
+df3.HC.sum <- select(df3.HC.sum, c('Protection', 'Location', 'Genus', 'Cover.x', 'Cover.y', 'se', '.group'))
+names(df3.HC.sum) <- c('Protection', 'Location', 'Genus', 'Cover', 'Cover.tot', 'se', 'siglet')
+
+# Remove double data
+df3.HC.sum$Cover.tot <- as.numeric(ifelse(df3.HC.sum$Genus  != 'Porites', "", df3.HC.sum$Cover.tot))
+df3.HC.sum$se <- as.numeric(ifelse(df3.HC.sum$Genus  != 'Porites', "", df3.HC.sum$se))
+df3.HC.sum$siglet <- ifelse(df3.HC.sum$Genus  != 'Porites', "", df3.HC.sum$siglet)
+
+# Plot stacked
+HC.SE <- ggplot(df3.HC.sum) +  
+  geom_bar(position = "stack", stat = "identity", aes(x = Location, y = Cover, fill=Genus))+
+  geom_errorbar(aes(x = Location, ymin=Cover.tot, ymax=Cover.tot+(1*se)), width=.2, size = 1, position=position_dodge(.9))+
+  geom_text(data = df3.HC.sum, aes(x=Location, y = Cover.tot + (1*se), label = siglet), 
+            vjust= -0.8, hjust = 0.5, size = 5, fontface = "bold", position=position_dodge(.9))+
+  geom_bar(data=df3.HC.sum[(df3.HC.sum$Genus=="Porites"),],
+           stat = "identity", aes(x = Location, y = Cover.tot, fill=Genus), alpha=0, size=1, color="black")+
+  scale_fill_manual("Genus", values = c("#FF930B", "#FFFF6F", "#EA4700", "#25006A", "#3D01AC", "#1575DE", "#26B3DE", "#49E9EA", "#2EE27C", "#78FF7D", "#CCFFA3", "#D4D4D4"))+
+  facet_wrap(~ Protection, scales="free_x")+
+  theme_economist()+scale_colour_economist()+
+  labs(y = "Hard coral cover (%)", x = "Study site")+
+  scale_x_discrete(expand = c(0, 0.7))+
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 67))+
+  theme(
+    panel.margin.y = unit(0, "cm"),
+    strip.text.x = element_text(size = 12, vjust = 2, margin = margin(0.2, 0, 0.1, 0, "cm")),
+    strip.background = element_blank(),
+    legend.position = "right",
+    legend.title = element_text(size = 12, face = "bold", hjust = 0.3),
+    legend.text = element_text(size = 11, face = "italic"),
+    axis.title.x = element_text(size = 14, vjust = -2),
+    axis.text.x = element_text(size = 12, face = "bold", vjust = 0.5),
+    axis.title.y = element_text( size = 14, vjust = 4),
+    axis.text.y = element_text(size = 12, face = "bold", vjust = 0.4),
+    panel.background = element_rect(fill = "#FCFCFC"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    panel.grid.major = element_line(colour = "#FFFFFF", size = 1),
+    axis.ticks = element_blank()
+    ) 
+
+plot_grid(HC.SE, plot_grid(NULL, p2, NULL, nrow = 3, rel_heights = c(1, 4)), rel_widths = c(6, 1))
+ggsave("Benthic_Coral x Genus by Location.tiff", width = 23, height = 11, units = "cm", dpi=1200, compression = "lzw")
+
+```
+
+# Save summary data to Excel for correlations
+```{r corexcel}
+
+df3.HC.mod.avg.xs <- select(df3.HC.mod.avg, c('Protection', 'Location', 'Cover', 'se'))
+names(df3.HC.mod.avg.xs) <- c("Protection", "Location", "Cover", "Cover.se")
+write_xlsx(df3.HC.mod.avg.xs, "Correlation data/Correlations_Coral cover.xlsx")
+
+```
+
+# Check packages used
+```{r}
+
+knitr::purl("benthic.Rmd")
+list.functions.in.file("benthic.R")
+unlink("benthic.R")
+
+```
+
+

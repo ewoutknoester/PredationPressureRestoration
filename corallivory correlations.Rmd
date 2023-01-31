@@ -1,0 +1,387 @@
+---
+title: "Correlations"
+author: "Ewout Knoester"
+date: "10/03/2022"
+output: html_document
+---
+
+# Setup
+```{r setup, include=FALSE}
+
+rm(list=ls()) # Clear workspace
+knitr::opts_knit$set(root.dir = '/tmp') #Set directory at current directory for all subsequent chunks
+
+library(data.table) # means multiple columns by factor
+library(ggpubr) # Arrange plots
+library(ggthemes) # pretty plots
+library(NCmisc) # Check packages used
+library(plyr)
+library(readxl) # Import excel sheets
+library(tidyverse) # Data manipulation and plotting
+
+```
+
+# Data selection (preparing dataset for archiving & sharing)
+
+```{r data selection}
+
+# Load data
+bitemarks <- read_excel("Correlation data/Correlations_Bitemarks.xlsx", sheet = 1)
+facfish <- read_excel("Correlation data/Correlations_FacFish.xlsx", sheet = 1)
+oblfish <- read_excel("Correlation data/Correlations_OblFish.xlsx", sheet = 1)
+snails <- read_excel("Correlation data/Correlations_Snails.xlsx", sheet = 1)
+predation <- read_excel("Correlation data/Correlations_Snail predation.xlsx", sheet = 1)
+coral.cover <- read_excel("Correlation data/Correlations_Coral cover.xlsx", sheet = 1)
+coral.H <- read_excel("Correlation data/Correlations_Coral diversity.xlsx", sheet = 1)
+
+# Combine
+Averages <- coral.cover
+Averages$HC.diversity <- coral.H$H
+Averages$Bitemarks <- bitemarks$Bitemarks.m2
+Averages$Fac.kgha <- facfish$Biomass.sum.kgha
+Averages$Obl.kgha <- oblfish$Biomass.sum.kgha
+Averages$Snails <- snails$Snails.m2coral
+Averages$Snails.predated<- predation$Snails.predated
+
+```
+
+# Data  cleaning
+```{r data cleaning}
+
+# Set variables
+Averages$Protection <- ordered(Averages$Protection, levels = c("Fished", "Reserve", "No-take"))
+Averages$Location <- as.factor(Averages$Location)
+
+bitemarks$Protection <- factor(bitemarks$Protection, ordered = TRUE, levels = c("Fished", "Reserve", "No-take"))
+facfish$Protection <- factor(facfish$Protection, ordered = TRUE, levels = c("Fished", "Reserve", "No-take"))
+oblfish$Protection <- factor(oblfish$Protection, ordered = TRUE, levels = c("Fished", "Reserve", "No-take"))
+snails$Protection <- factor(snails$Protection, ordered = TRUE, levels = c("Fished", "Reserve", "No-take"))
+predation$Protection <- factor(predation$Protection, ordered = TRUE, levels = c("Fished", "Reserve", "No-take"))
+
+```
+
+
+# Correlations
+```{r correlations}
+
+cors <- as.data.frame(correlation::correlation(Averages, p_adjust = "none"))
+cors$ID <- paste(cors$Parameter1, cors$Parameter2, sep = "X")
+cors <- cors[c(3, 9, 12)]
+cors$r <- round(cors$r, 2)
+cors$p <- round(cors$p, 3)
+cors$star <- ifelse(cors$p <= 0.001, "***",
+  ifelse(cors$p <= 0.01, "**", 
+    ifelse(cors$p <= 0.05, "*", "")))
+cors$sum <- paste("R = ", cors$r, cors$star, sep = "")
+
+
+```
+
+# Compiled Fig
+```{r}
+
+# Layout:
+Mar.A <- c(5,0,30,5) # Plot margins ANOVAs
+Mar.C <- c(5,0,5,5) # Plot margins Correlations
+colour_p <- c("#B3DCFF","#FFD989", "#e06060")
+TitSiz.X <- 11
+TitSiz.Y <- 10.5
+TxtSiz <- 12
+SigSiz <- 4
+RSiz <- 3.5
+gridlines.maj <- element_blank() #element_line(colour = "#797979", size = 0.3)
+gridlines.min <- element_blank() #element_line(colour = "#797979", size = 0.5)
+ticklength <- unit(0.15, "cm")
+  
+#A
+BM <- ggplot(bitemarks, aes(x = Location, y = Bitemarks.m2))+
+  geom_bar(stat = "identity", position = position_dodge())+ 
+  facet_wrap(~ Protection, scales="free_x")+
+  labs(y = expression(paste("Bite marks (", m^-2,")")), x = "")+
+  scale_y_continuous(limits = c (0, 1.15*(max(bitemarks$Bitemarks.m2) + max(bitemarks$se))), breaks = waiver(), minor_breaks = waiver(), n.breaks = 3, expand = c(0,0))+
+  geom_errorbar(aes(ymin=Bitemarks.m2-(1*se), ymax=Bitemarks.m2+(1*se)), width=.2, position=position_dodge(.9))+
+  geom_text(data = bitemarks, aes(x=Location, y = Bitemarks.m2 + (1*se), label = siglet.loc), 
+            vjust= -0.8, hjust = 0.5, size = SigSiz, fontface = "bold", position=position_dodge(.9))+
+  scale_x_discrete(expand = c(0, 0.7))+
+  theme_economist()+scale_colour_economist()+
+  theme(
+    panel.margin.y = unit(0, "cm"),
+    strip.text.x = element_text(size = 11, face = "bold", vjust = 2, margin = margin(0.2, 0, 0.1, 0, "cm")),
+    strip.background = element_blank(),
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.title.y = element_text(color="black" , vjust=4, hjust = 0.7,  size = TitSiz.Y),
+    axis.text.y=element_text(size=TxtSiz, face = "bold", vjust=0.4),
+    plot.margin = margin(c(0,0,30,5) , "cm"),
+    panel.background = element_rect(fill = "#FCFCFC"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    panel.grid.major = gridlines.maj,
+    panel.grid.minor = gridlines.min,
+    axis.ticks.length = ticklength
+    )
+
+#B
+HC.BM <- ggplot(Averages, aes(x = Cover, y = Bitemarks)) + 
+  scale_x_continuous("Hard coral (%)", n.breaks = 3, label = waiver (), limits = c (0, max(Averages$Cover)*1.1))+
+  scale_y_continuous(expression(paste("Bite marks (", m^-2,")")), n.breaks = 4, limits = c(0, max(Averages$Bitemarks)*1.1), label = waiver ())+
+  geom_point(aes(colour=Protection), size =6) +
+  scale_color_manual(values = colour_p)+
+  geom_smooth(colour="black", method="lm", se=FALSE, size = 1, fullrange=TRUE, linetype = "dashed")+ 
+  theme(
+    text = element_text(size = 16),
+    axis.title.x = element_text(color="black", vjust=-1, size = TitSiz.X),
+    axis.text.x = element_text(angle = 0, size=TxtSiz, face = "bold", vjust=0),
+    axis.title.y = element_text(color="black", size = TitSiz.Y, vjust=1),
+    axis.text.y = element_text(angle = 0, size=TxtSiz, face = "bold", vjust=0),
+    panel.background = element_rect(fill = "#FCFCFC"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    axis.line = element_line(size = 0.5, colour = "Black", linetype=1),
+    panel.border = element_rect(colour = "white", fill=NA, size=0.5),
+    legend.key = element_rect(fill = "#FFFFFF"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_line(colour="#FCFCFC", size=0.1),
+    plot.margin = margin(Mar.C, "cm")
+    )+
+    guides(shape = guide_legend(order = 2), colour = guide_legend(order = 1))+
+    geom_text(aes(label=Location),hjust=0.5, vjust=0.35)+
+    annotate("text", x = 25, y = 18, label = cors$sum[cors$ID == "CoverXBitemarks"], size = RSiz)
+
+#C
+FAC <- ggplot(facfish, aes(x = Location, y = Biomass.sum.kgha))+
+  geom_bar(stat = "identity", position = position_dodge())+ 
+  facet_wrap(~ Protection, scales="free_x")+
+  labs(y = expression(paste("Facultative fish (kg ", ha^-1,")")))+
+  scale_y_continuous(limits = c (0, 410), breaks = c(0, 200, 400), expand = c(0,0))+
+  geom_errorbar(aes(ymin=ifelse(Biomass.sum.kgha - se < 0,0, Biomass.sum.kgha-(1*se)), ymax=Biomass.sum.kgha+(1*se)), width=.2, position=position_dodge(.9))+
+  geom_text(data = facfish, aes(x=Location, y = Biomass.sum.kgha + (1*se), label = siglet.loc), 
+            vjust= -0.8, hjust = 0.5, size = SigSiz, fontface = "bold", position=position_dodge(.9))+
+  scale_x_discrete(expand = c(0, 0.7))+
+  theme_economist()+scale_colour_economist()+
+  theme(
+    panel.margin.y = unit(0, "cm"),
+    strip.text.x = element_blank(),
+    strip.background = element_blank(),
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.title.y = element_text(color="black" , vjust=4, hjust = -0.1, size = TitSiz.Y),
+    axis.text.y=element_text(size=TxtSiz, face = "bold", vjust=0.4),
+    plot.margin = margin(Mar.A, "cm"),
+    panel.background = element_rect(fill = "#FCFCFC"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    panel.grid.major = gridlines.maj,
+    panel.grid.minor = gridlines.min,
+    axis.ticks.length = ticklength
+    )
+
+#D
+HC.FAC <- ggplot(Averages, aes(x=Cover, y=Fac.kgha)) + 
+  scale_x_continuous("Hard coral (%)", n.breaks = 3, label = waiver (), limits = c (0, max(Averages$Cover)*1.1))+
+  scale_y_continuous(expression(paste("Facultative fish (kg ", ha^-1,")")), n.breaks = 4, limits = c(0, max(Averages$Fac.kgha)*1.1), label = waiver ())+
+  geom_point(aes(colour=Protection), size =6) +
+  scale_color_manual(values = colour_p)+
+  geom_smooth(colour="black", method="lm", se=FALSE, size = 1, fullrange=TRUE, linetype = "dashed")+ 
+  theme(
+    text = element_text(size = 16),
+    axis.title.x = element_text(color="black", vjust=-1, size = TitSiz.X),
+    axis.text.x = element_text(angle = 0, size=TxtSiz, face = "bold", vjust=0),
+    axis.title.y = element_text(color="black", size = TitSiz.Y, vjust=1, hjust = -0.1),
+    axis.text.y = element_text(angle = 0, size=TxtSiz, face = "bold", vjust=0),
+    panel.background = element_rect(fill = "#FCFCFC"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    axis.line = element_line(size = 0.5, colour = "Black", linetype=1),
+    panel.border = element_rect(colour = "white", fill=NA, size=0.5),
+    legend.key = element_rect(fill = "#FFFFFF"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_line(colour="#FCFCFC", size=0.1),
+    plot.margin = margin(Mar.C, "cm")
+    )+
+    guides(shape = guide_legend(order = 2), colour = guide_legend(order = 1))+
+    geom_text(aes(label=Location),hjust=0.5, vjust=0.35)+
+    annotate("text", x = 30, y = 120, label = cors$sum[cors$ID == "CoverXFac.kgha"], size = RSiz)
+
+#E
+OBL <- ggplot(oblfish, aes(x = Location, y = Biomass.sum.kgha))+
+  geom_bar(stat = "identity", position = position_dodge())+ 
+  facet_wrap(~ Protection, scales="free_x")+
+  labs(y = expression(paste("Obligate fish (kg ", ha^-1,")")))+
+  scale_y_continuous(limits = c (0, 1.15*(max(oblfish$Biomass.sum.kgha) + max(oblfish$se))), breaks = c(0, 5, 10),  expand = c(0,0))+
+  geom_errorbar(aes(ymin=ifelse(Biomass.sum.kgha - se < 0,0, Biomass.sum.kgha-(1*se)), ymax=Biomass.sum.kgha+(1*se)), width=.2, position=position_dodge(.9))+
+  geom_text(data = oblfish, aes(x=Location, y = Biomass.sum.kgha + (1*se), label = siglet.loc), 
+            vjust= -0.8, hjust = 0.5, size = SigSiz, fontface = "bold", position=position_dodge(.9))+
+  scale_x_discrete(expand = c(0, 0.7))+
+  theme_economist()+scale_colour_economist()+
+  theme(
+    panel.margin.y = unit(0, "cm"),
+    strip.text.x = element_blank(),
+    strip.background = element_blank(),
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.title.y = element_text(color="black" , vjust=4, hjust = 0.3, size = TitSiz.Y),
+    axis.text.y=element_text(size=TxtSiz, face = "bold", vjust=0.4),
+    plot.margin = margin(Mar.A, "cm"),
+    panel.background = element_rect(fill = "#FCFCFC"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    panel.grid.major = gridlines.maj,
+    panel.grid.minor = gridlines.min,
+    axis.ticks.length = ticklength
+    )
+
+#F
+HC.OBL <- ggplot(Averages, aes(x=Cover, y=Obl.kgha)) + 
+  scale_x_continuous("Hard coral (%)", n.breaks = 3, label = waiver (), limits = c (0, max(Averages$Cover)*1.1))+
+  scale_y_continuous(expression(paste("Obligate fish (kg ", ha^-1,")")), n.breaks = 3, limits = c(0, max(Averages$Obl.kgha)*1.2), label = waiver ())+
+  geom_point(aes(colour=Protection), size =6) +
+  scale_color_manual(values = colour_p)+
+  geom_smooth(colour="black", method="lm", se=FALSE, size = 1.2, fullrange=TRUE)+ 
+  theme(
+    text = element_text(size = 16),
+    axis.title.x = element_text(color="black", vjust=-1, size = TitSiz.X),
+    axis.text.x = element_text(angle = 0, size=TxtSiz, face = "bold", vjust=0),
+    axis.title.y = element_text(color="black", size = TitSiz.Y, vjust=1),
+    axis.text.y = element_text(angle = 0, size=TxtSiz, face = "bold", vjust=0),
+    panel.background = element_rect(fill = "#FCFCFC"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    axis.line = element_line(size = 0.5, colour = "Black", linetype=1),
+    panel.border = element_rect(colour = "white", fill=NA, size=0.5),
+    legend.key = element_rect(fill = "#FFFFFF"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_line(colour="#FCFCFC", size=0.1),
+    plot.margin = margin(Mar.C, "cm")
+    )+
+    guides(shape = guide_legend(order = 2), colour = guide_legend(order = 1))+
+    geom_text(aes(label=Location),hjust=0.5, vjust=0.35)+
+    annotate("text", x = 30, y = 5, label = cors$sum[cors$ID == "CoverXObl.kgha"], size = RSiz)
+
+#G
+SNAILS <- ggplot(snails, aes(x = Location, y = Snails.m2coral))+
+  geom_bar(stat = "identity", position = position_dodge())+ 
+  facet_wrap(~ Protection, scales="free_x")+
+  labs(y = expression(paste("Snail density ( ", m^-2," coral)")))+
+  scale_y_continuous(limits = c (0, 1.2*(max(snails$Snails.m2coral) + max(snails$se))), breaks = waiver(), minor_breaks = waiver(), n.breaks = 3, expand = c(0,0))+
+  geom_errorbar(aes(ymin=ifelse(Snails.m2coral - se < 0,0, Snails.m2coral-(1*se)), ymax=Snails.m2coral+(1*se)), width=.2, position=position_dodge(.9))+
+  geom_text(data = snails, aes(x=Location, y = Snails.m2coral + (1*se), label = siglet.loc), 
+            vjust= -0.8, hjust = 0.5, size = SigSiz, fontface = "bold", position=position_dodge(.9))+
+  scale_x_discrete(expand = c(0, 0.7))+
+  theme_economist()+scale_colour_economist()+
+  theme(
+    panel.margin.y = unit(0, "cm"),
+    strip.text.x = element_blank(),
+    strip.background = element_blank(),
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.title.y = element_text(color="black" , vjust=4, hjust = -0.4, size = TitSiz.Y),
+    axis.text.y=element_text(size=TxtSiz, face = "bold", vjust=0.4),
+    plot.margin = margin(Mar.A, "cm"),
+    panel.background = element_rect(fill = "#FCFCFC"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    panel.grid.major = gridlines.maj,
+    panel.grid.minor = gridlines.min,
+    axis.ticks.length = ticklength
+    )
+
+#H
+HC.SNAILS <- ggplot(Averages, aes(x=Cover, y=Snails)) + 
+  scale_x_continuous("Hard coral (%)", n.breaks = 3, label = waiver (), limits = c (0, max(Averages$Cover)*1.1))+
+  scale_y_continuous(expression(paste("Snail density ( ", m^-2," coral)")), n.breaks = 3, limits = c(0, max(Averages$Snails)*1.1), label = waiver ())+
+  geom_point(aes(colour=Protection), size =6) +
+  scale_color_manual(values = colour_p)+
+  geom_smooth(colour="black", method="lm", se=FALSE, size = 1, fullrange=TRUE, linetype = "dashed")+ 
+  theme(
+    text = element_text(size = 16),
+    axis.title.x = element_text(color="black", vjust=-1, size = TitSiz.X),
+    axis.text.x = element_text(angle = 0, size=TxtSiz, face = "bold", vjust=0),
+    axis.title.y = element_text(color="black", size = TitSiz.Y, vjust=1, hjust = -0.2),
+    axis.text.y = element_text(angle = 0, size=TxtSiz, face = "bold", vjust=0),
+    panel.background = element_rect(fill = "#FCFCFC"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    axis.line = element_line(size = 0.5, colour = "Black", linetype=1),
+    panel.border = element_rect(colour = "white", fill=NA, size=0.5),
+    legend.key = element_rect(fill = "#FFFFFF"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_line(colour="#FCFCFC", size=0.1),
+    plot.margin = margin(Mar.C, "cm")
+    )+
+    guides(shape = guide_legend(order = 2), colour = guide_legend(order = 1))+
+    geom_text(aes(label=Location),hjust=0.5, vjust=0.35)+
+    annotate("text", x = 30, y = 2.8, label = cors$sum[cors$ID == "CoverXSnails"], size = RSiz)
+
+#I
+PRED <- ggplot(predation, aes(x = Location, y = Snails.predated))+
+  geom_bar(stat = "identity", position = position_dodge())+ 
+  facet_wrap(~ Protection, scales="free_x")+
+  labs(y = "Snails predated (%)", x = "Study site")+
+  scale_y_continuous(limits = c (0, 1.2*(max(predation$Snails.predated) + max(predation$se))), breaks = waiver(), minor_breaks = waiver(), n.breaks = 3, expand = c(0,0))+
+  geom_errorbar(aes(ymin=ifelse(Snails.predated - se < 0,0, Snails.predated-(1*se)), ymax=Snails.predated+(1*se)), width=.2, position=position_dodge(.9))+
+  #geom_text(data = predation, aes(x=Location, y = Snails.predated + (1*se), label = siglet.loc), 
+          #  vjust= -0.8, hjust = 0.5, size = SigSiz, fontface = "bold", position=position_dodge(.9))+
+  scale_x_discrete(expand = c(0, 0.7))+
+  theme_economist()+scale_colour_economist()+
+  theme(
+    panel.margin.y = unit(0, "cm"),
+    strip.text.x = element_blank(),
+    strip.background = element_blank(),
+    axis.title.x = element_text(color="black", vjust=-2, size = 11),
+    axis.text.x = element_text(angle = 0, size=TxtSiz, face = "bold", vjust=0.5),
+    axis.title.y = element_text(color="black" , vjust=3, hjust =0.4, size = TitSiz.Y),
+    axis.text.y=element_text(size=12, face = "bold", vjust=0.4),
+    plot.margin = margin(c(5,0,5,5) , "cm"),
+    panel.background = element_rect(fill = "#FCFCFC"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    panel.grid.major = gridlines.maj,
+    panel.grid.minor = gridlines.min,
+    axis.ticks.length = ticklength
+    )
+
+#J
+H.SNAILS <- ggplot(Averages, aes(x=HC.diversity, y=Snails)) + 
+  scale_x_continuous("Coral diversity (H')", n.breaks = 3, label = waiver (), limits = c (0.5, max(Averages$HC.diversity)*1.1))+
+  scale_y_continuous(expression(paste("Snail density ( ", m^-2," coral)")), n.breaks = 3, limits = c(0, max(Averages$Snails)*1.1), label = waiver ())+
+  geom_point(aes(colour=Protection), size =6) +
+  scale_color_manual(values = colour_p)+
+  geom_smooth(colour="black", method="lm", se=FALSE, size = 1.2, fullrange=TRUE)+ 
+  theme(
+    text = element_text(size = 16),
+    axis.title.x = element_text(color="black", vjust=-1, size = TitSiz.X),
+    axis.text.x = element_text(angle = 0, size=TxtSiz, face = "bold", vjust=0),
+    axis.title.y = element_text(color="black", size = TitSiz.Y, hjust =-0.1, vjust=1),
+    axis.text.y = element_text(angle = 0, size=TxtSiz, face = "bold", vjust=0),
+    panel.background = element_rect(fill = "#FCFCFC"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    axis.line = element_line(size = 0.5, colour = "Black", linetype=1),
+    panel.border = element_rect(colour = "white", fill=NA, size=0.5),
+    legend.key = element_rect(fill = "#FFFFFF"),
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_line(colour="#FCFCFC", size=0.1),
+    plot.margin = margin(Mar.C, "cm")
+    )+
+    guides(shape = guide_legend(order = 2), colour = guide_legend(order = 1))+
+    geom_text(aes(label=Location),hjust=0.5, vjust=0.35)+
+    annotate("text", x = 1.2, y = 1.5, label = cors$sum[cors$ID == "HC.diversityXSnails"], size = RSiz)
+
+figure <- ggarrange(BM, ggplot() + theme_void(), HC.BM,
+                    FAC, ggplot() + theme_void(), HC.FAC,
+                    OBL, ggplot() + theme_void(), HC.OBL,
+                    SNAILS, ggplot() + theme_void(), HC.SNAILS,
+                    PRED, ggplot() + theme_void(), H.SNAILS,
+                    labels = c("a", "", "b", "c", "", "d", "e", "", "f", "g", "", "h", "i", "", "j"), vjust = 1, hjust = 0,
+                    font.label = list(size = 16, color = "black", face = "bold", family = NULL),
+                    widths = c(1, 0.02, 0.8),
+                    ncol = 3, nrow = 5, 
+                    common.legend = T,
+                    align = "hv",
+                    legend="bottom")+
+  theme(plot.margin = margin(0.1,0.1,0.1,0.1, "cm")) 
+ggsave("Corallivory correlations_Corallivory correlations.tiff", figure, width = 21, height = 30, units = "cm", dpi=1200, compression = "lzw")
+
+```
+
+# Check packages used
+```{r}
+
+knitr::purl("corallivory correlations.Rmd")
+list.functions.in.file("corallivory correlations.R")
+unlink("corallivory correlations.R")
+
+```
+
+

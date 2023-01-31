@@ -1,0 +1,410 @@
+---
+title: "specieslist"
+author: "Ewout Knoester"
+date: "15/11/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+rm(list=ls()) # Clear workspace
+knitr::opts_knit$set(root.dir = '/tmp') #Set directory at current directory for all subsequent chunks
+options(scipen = 50) # Have all numbers in non-scientific notation
+
+library(car) # ANOVA results
+library(data.table) # Data table
+library(emmeans) # Pairwise comparisons
+library(ggthemes) # pretty plots
+library(NCmisc) # Check packages used
+library(nlme) # GLS
+library(plyr) # Join (vlookup)
+library(readxl) # Import excel sheets
+library(tidyverse) # Data manipulation and plotting
+library(writexl) # Export Excel
+
+data_summary <- function(data, varname, groupnames){
+  require(plyr)
+  summary_func <- function(x, col){
+    c(sum = sum(x[[col]]),
+      mean = mean(x[[col]], na.rm=TRUE),
+      sd = sd(x[[col]], na.rm=TRUE),
+      n  = length(x[[col]]),
+      se = sd(x[[col]], na.rm=TRUE)/sqrt(length(x[[col]])))
+  }
+  data_sum<-ddply(data, groupnames, .fun=summary_func,
+                  varname)
+  data_sum <- plyr::rename(data_sum, c("mean" = varname))
+ return(data_sum)
+}
+
+```
+
+# Load & organize data
+<!--
+Data info:
+  Data collected by 
+-->
+
+```{r}
+
+# Load raw data
+db.0raw <- read_excel("Raw data/Fish surveys_DATABASE_04_Selection.xlsx", sheet = "SPECIES")
+
+# Drop irrelevant columns
+db.1clean <- db.0raw[-c(2, 5, 6, 9)]
+db.1clean$Survey <- as.factor(db.1clean$Survey)
+db.1clean$Location <- as.factor(db.1clean$Location)
+db.1clean$Species <- as.factor(db.1clean$Species)
+
+# Count surveys
+db.2count <- db.1clean %>%
+        dplyr::group_by(Survey, Location) %>%
+        dplyr::tally()
+
+db.2surveys <- db.2count %>%
+        dplyr::group_by(Survey, Location) %>%
+        dplyr::tally()
+db.2surveys <- select(db.2surveys, -c('n'))
+
+db.2count <- db.2count %>%
+        dplyr::group_by(Location) %>%
+        dplyr::tally()
+colnames(db.2count)[which(names(db.2count) == "n")] <- "Surveys"
+
+# FACULTATIVE CORALLIVORES
+db.2Fac <- subset(db.1clean, Corallivore.F == "YES" & Corallivore.O == "NO" )
+
+## BY STUDY SITE
+db.2Fac.sur  <- db.2Fac %>%
+        dplyr::group_by(Survey) %>%
+        dplyr::summarise(Biomass.sum.kgha = sum(Biomass))
+
+# Merge to get surveys where biomass = 0 back
+db.2Fac.sur <- merge(db.2surveys, db.2Fac.sur, by = 'Survey', all.x = TRUE)
+db.2Fac.sur[is.na(db.2Fac.sur)] <- 0
+
+db.2Fac.loc <- data_summary(db.2Fac.sur, varname = "Biomass.sum.kgha", groupnames = c("Location"))
+
+## Set Protection
+db.2Fac.loc$Protection <- as.factor(ifelse(db.2Fac.loc$Location  == 1, "Fished",
+                  ifelse(db.2Fac.loc$Location  == 2, "Fished", 
+                   ifelse(db.2Fac.loc$Location  == 3, "Reserve", 
+                    ifelse(db.2Fac.loc$Location  == 4, "Reserve", 
+                     ifelse(db.2Fac.loc$Location  == 5, "No-take", "No-take"))))))
+db.2Fac.loc$Protection <- factor(db.2Fac.loc$Protection, ordered = TRUE, levels = c("Fished", "Reserve", "No-take"))
+
+## BY SPECIES
+db.2Fac.sum <- db.2Fac  %>%  
+  dplyr::group_by(Species, Location) %>% 
+  dplyr::summarise(Biomass.sum = sum(Biomass, na.rm = TRUE))
+
+### Calculate biomass in kg/ha
+db.2Fac.sum <- as.data.frame(append(db.2Fac.sum, list(Surveys = ""))) 
+
+### Set varying number of Surveys per Location
+db.2Fac.sum$Surveys <- ifelse(
+  db.2Fac.sum$Location == 1, 11, ifelse(db.2Fac.sum$Location == 2, 13, ifelse(db.2Fac.sum$Location == 3, 15,
+                           ifelse(db.2Fac.sum$Location == 4, 15, ifelse(db.2Fac.sum$Location == 5, 11, 12)))))
+
+### Calculate Biomass (kg/ha)
+db.2Fac.sum <- as.data.frame(append(db.2Fac.sum, list(Biomass.kgha = db.2Fac.sum$Biomass.sum / db.2Fac.sum$Surveys))) 
+
+### Average Biomass of Facultative corallivores per Location
+db.2Fac.avgSite <- db.2Fac.sum  %>%  
+  dplyr::group_by(Location) %>% 
+  dplyr::summarise(Biomass = sum(Biomass.kgha, na.rm = TRUE))
+
+### Sort by total biomass per Species 
+### Average Biomass of Facultative corallivores per Species
+db.2Fac.avgSpecies <- db.2Fac.sum  %>%  
+  dplyr::group_by(Species) %>% 
+  dplyr::summarise(Biomass.tot = sum(Biomass.kgha, na.rm = TRUE))
+
+### Create category Other, for those species having relatively few Bites
+#### Express biomass in percentages
+Total.Fac <- sum(db.2Fac.avgSpecies$Biomass.tot)
+db.2Fac.avgSpecies <- as.data.frame(append(db.2Fac.avgSpecies, 
+                      list(Biomass.pct = db.2Fac.avgSpecies$Biomass.tot / Total.Fac * 100)))
+
+#### Join dataframes
+db.2Fac.sum <- plyr::join(db.2Fac.sum, db.2Fac.avgSpecies, by = "Species")
+
+#### Change Species names to category Other, when their total Bites contribute < 3%
+db.2Fac.sum$Species <- ifelse(db.2Fac.sum$Biomass.pct < 3, "Other", as.character(db.2Fac.sum$Species))
+
+#### Drop coluns
+db.2Fac.sum <- db.2Fac.sum[-c(3, 4, 7)] 
+
+# OBLIGATE CORALLIVORES
+db.2Obl <- subset(db.1clean, Corallivore.O == "YES")
+
+## BY STUDY Location
+db.2Obl.sur  <- db.2Obl %>%
+        dplyr::group_by(Survey) %>%
+        dplyr::summarise(Biomass.sum.kgha = sum(Biomass))
+
+# Merge to get surveys where biomass = 0 back
+db.2Obl.sur <- merge(db.2surveys, db.2Obl.sur, by = 'Survey', all.x = TRUE)
+db.2Obl.sur[is.na(db.2Obl.sur)] <- 0
+
+db.2Obl.loc <- data_summary(db.2Obl.sur, varname = "Biomass.sum.kgha", groupnames = c("Location"))
+
+## Set Protection
+db.2Obl.loc$Protection <- as.factor(ifelse(db.2Obl.loc$Location  == 1, "Fished",
+                  ifelse(db.2Obl.loc$Location  == 2, "Fished", 
+                   ifelse(db.2Obl.loc$Location  == 3, "Reserve", 
+                    ifelse(db.2Obl.loc$Location  == 4, "Reserve", 
+                     ifelse(db.2Obl.loc$Location  == 5, "No-take", "No-take"))))))
+db.2Obl.loc$Protection <- factor(db.2Obl.loc$Protection, ordered = TRUE, levels = c("Fished", "Reserve", "No-take"))
+
+## BY SPECIES
+db.2Obl.sum <- db.2Obl  %>%  
+  dplyr::group_by(Species, Location) %>% 
+  dplyr::summarise(Biomass.sum = sum(Biomass, na.rm = TRUE))
+
+## Calculate biomass in kg/ha
+db.2Obl.sum <- as.data.frame(append(db.2Obl.sum, list(Surveys = ""))) 
+
+### Set varying number of Surveys per Location
+db.2Obl.sum$Surveys <- ifelse(
+  db.2Obl.sum$Location == 1, 11, ifelse(db.2Obl.sum$Location == 2, 13, ifelse(db.2Obl.sum$Location == 3, 15,
+                           ifelse(db.2Obl.sum$Location == 4, 15, ifelse(db.2Obl.sum$Location == 5, 11, 12)))))
+
+### Calculate Biomass (kg/ha)
+db.2Obl.sum <- as.data.frame(append(db.2Obl.sum, list(Biomass.kgha = db.2Obl.sum$Biomass.sum / db.2Obl.sum$Surveys))) 
+
+## Average Biomass of Facultative corallivores per Location
+db.2Obl.avgSite <- db.2Obl.sum  %>%  
+  dplyr::group_by(Location) %>% 
+  dplyr::summarise(Biomass = sum(Biomass.kgha, na.rm = TRUE))
+
+## Sort by total biomass per Species 
+### Average Biomass of Facultative corallivores per Species
+db.2Obl.avgSpecies <- db.2Obl.sum  %>%  
+  dplyr::group_by(Species) %>% 
+  dplyr::summarise(Biomass.tot = sum(Biomass.kgha, na.rm = TRUE))
+
+### Create category Other, for those species having relatively few Bites
+#### Express biomass in percentages
+Total.Obl <- sum(db.2Obl.avgSpecies$Biomass.tot)
+db.2Obl.avgSpecies <- as.data.frame(append(db.2Obl.avgSpecies, 
+                      list(Biomass.pct = db.2Obl.avgSpecies$Biomass.tot / Total.Obl * 100)))
+
+#### Join dataframes
+db.2Obl.sum <- plyr::join(db.2Obl.sum, db.2Obl.avgSpecies, by = "Species")
+
+#### Change Species names to category Other, when their total Bites contribute < 0.5% (none)
+db.2Obl.sum$Species <- ifelse(db.2Obl.sum$Biomass.pct < 0.5, "Other", as.character(db.2Obl.sum$Species))
+
+#### Drop columns
+db.2Obl.sum <- db.2Obl.sum[-c(3, 4, 7)] 
+
+
+```
+# Model
+```{r}
+
+# FACULTATIVE
+## Simple model
+fac1  <- gls(Biomass.sum.kgha ~ Location, data = db.2Fac.sur)
+
+## Allowing for heterogeneity among Locations improves residuals
+fac1.w  <- gls(Biomass.sum.kgha ~ Location, weights = varIdent(form = ~ 1|Location), data = db.2Fac.sur)
+
+## LOG transformation
+fac1.w.log  <- gls(log10(Biomass.sum.kgha + 0.002) ~ Location, weights = varIdent(form = ~ 1|Location), data = db.2Fac.sur)
+
+## Output
+car::Anova(fac1.w.log)
+
+# OBLIGATE
+## Simple model
+obl1  <- gls(Biomass.sum.kgha ~ Location, data = db.2Obl.sur)
+
+## Allowing for heterogeneity among Locations improves residuals
+obl1.w  <- gls(Biomass.sum.kgha ~ Location, weights = varIdent(form = ~ 1|Location), data = db.2Obl.sur)
+
+## LOG transformation
+obl1.w.log  <- gls(log10(Biomass.sum.kgha + 0.1) ~ Location, weights = varIdent(form = ~ 1|Location), data = db.2Obl.sur)
+
+## Output
+car::Anova(obl1.w.log)
+
+```
+
+# Model validation
+```{r model validation}
+
+mod <- fac1.w.log # set model to be validated
+op <- par(mfrow = c(2, 3), mar = c(5, 4, 1, 2)) # set layout of figure frame
+plot(resid(mod, type = "pearson") ~ fitted(mod)) # fitted vs residuals
+abline(0,0)
+hist(resid(mod, type = "pearson"), main = "") # histogram residuals
+qqnorm(resid(mod, type = "pearson")) # QQplot residuals
+plot(db.2Fac.sur$Location, resid(mod, type = "pearson")) # residuals split over Date
+abline(0,0)
+plot(fitted(mod) ~ log10(db.2Fac.sur$Biomass.sum.kgha)) # response data vs fitted
+par(op)
+
+mod <- obl1.w.log # set model to be validated
+op <- par(mfrow = c(2, 3), mar = c(5, 4, 1, 2)) # set layout of figure frame
+plot(resid(mod, type = "pearson") ~ fitted(mod)) # fitted vs residuals
+abline(0,0)
+hist(resid(mod, type = "pearson"), main = "") # histogram residuals
+qqnorm(resid(mod, type = "pearson")) # QQplot residuals
+plot(db.2Obl.sur$Location, resid(mod, type = "pearson")) # residuals split over Date
+abline(0,0)
+plot(fitted(mod) ~ log10(db.2Obl.sur$Biomass.sum.kgha)) # response data vs fitted
+par(op)
+
+```
+# Post hoc
+```{r post hoc}
+
+# FACULTATIVES
+hsd.fac <- emmeans(fac1.w.log, specs = pairwise ~ Location, adjust = "tukey", type = "response")
+
+# OBLIGATES
+hsd.obl <- emmeans(obl1.w.log, specs = pairwise ~ Location, adjust = "tukey", type = "response")
+
+```
+
+
+# Plotting
+```{r plotting}
+
+# FACULTATIVE
+## By Study Location
+### Post hoc letters
+sigletters.fac <- multcomp::cld(hsd.fac$emmeans, alpha = 0.05, Letters = letters, reversed = TRUE) # get CLD
+
+### Make order match with summary dataframe
+sigletters.fac <- sigletters.fac[order(sigletters.fac$Location),]
+sigletters.fac <- sigletters.fac %>% dplyr::mutate(.group = str_squish(.group)) # remove white spaces
+
+### Merge sig.letter dataframe into the summary dataframe
+db.2Fac.loc <- cbind(db.2Fac.loc, siglet.loc = sigletters.fac$.group)
+
+### Plot
+ggplot(db.2Fac.loc, aes(x = Location, y = Biomass.sum.kgha))+
+  geom_bar(stat = "identity", position = position_dodge())+ 
+  facet_wrap(~ Protection, scales="free_x")+
+  labs(y = expression(paste("Biomass (kg ", ha^-1,")")))+
+  scale_y_continuous(limits = c (0, 550), expand = c(0,0))+
+  geom_errorbar(aes(ymin=ifelse(Biomass.sum.kgha - se < 0,0, Biomass.sum.kgha-(1*se)), ymax=Biomass.sum.kgha+(1*se)), width=.2, position=position_dodge(.9))+
+  geom_text(data = db.2Fac.loc, aes(x=Location, y = Biomass.sum.kgha + (1*se), label = siglet.loc), 
+            vjust= -0.8, hjust = 0.5, size = 5, fontface = "bold", position=position_dodge(.9))+
+  scale_x_discrete(expand = c(0, 0.7))+
+  theme_economist()+scale_colour_economist()+
+  theme(
+    panel.margin.y = unit(0, "cm"),
+    strip.text.x = element_text(size = 14, face = "bold", vjust = 2, margin = margin(0.2, 0, 0.1, 0, "cm")),
+    strip.background = element_blank(),
+    axis.title.x = element_text(color="black", vjust=-2, size = 14),
+    axis.text.x = element_text(angle = 0, size=12, face = "bold", vjust=0.5),
+    axis.title.y = element_text(color="black" , vjust=4, size = 14),
+    axis.text.y=element_text(size=12, face = "bold", vjust=0.4),
+    plot.margin = margin(t = 10, r = 40,  b = 25,  l = 20),
+    panel.background = element_rect(fill = "#FCFCFC"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    panel.grid.major = element_line(colour = "#797979", size = 0.3),
+    axis.ticks = element_blank()
+    )
+#ggsave("Biomass_Facultative.tiff", width = 23, height = 11, units = "cm", dpi=1200, compression = "lzw")
+
+## Stacked bar Facultative corallivores
+ggplot(db.2Fac.sum, aes(fill=Location, y=Biomass.kgha, x=reorder(Species, -Biomass.tot))) + 
+    geom_bar(position="stack", stat="identity")+
+    scale_fill_manual(values = c("#b3dcff", "#90b2ce", "#ffd989", "#ceaf6e", "#e06060", "#b44d4d"))+
+    labs(y = expression(paste("Biomass (kg ", ha^-1,")")), x = "Species", fill = "Study site")+
+    theme_economist()+
+    theme(
+      axis.title.x = element_text(color="black", vjust=-2, size = 14),
+      axis.text.x=element_text(size=12, face = "bold.italic", vjust=0.5, angle = -35, hjust=0),
+      axis.title.y = element_text(color="black" , vjust=4, size = 14),
+      axis.text.y=element_text(size=12, face = "bold", vjust=0.5),
+      plot.margin = unit(c(0.5,2.5,0.5,0.5), "cm"),
+      panel.background = element_rect(fill = "#FCFCFC"),
+      plot.background = element_rect(fill = "#FFFFFF"),
+      panel.grid.major = element_line(colour = "#797979", size = 0.3)
+      )
+ggsave("Facultative corallivores.tiff", width = 23, height = 10, units = "cm", dpi=1200, compression = "lzw")
+
+# OBLIGATES
+## By Study Location
+### Post hoc letters
+sigletters.obl <- multcomp::cld(hsd.obl$emmeans, alpha = 0.05, Letters = letters, reversed = TRUE) # get CLD
+
+### Make order match with summary dataframe
+sigletters.obl <- sigletters.obl[order(sigletters.obl$Location),]
+sigletters.obl <- sigletters.obl %>% dplyr::mutate(.group = str_squish(.group)) # remove white spaces
+
+### Merge sig.letter dataframe into the summary dataframe
+db.2Obl.loc <- cbind(db.2Obl.loc, siglet.loc = sigletters.obl$.group)
+
+### Plot
+ggplot(db.2Obl.loc, aes(x = Location, y = Biomass.sum.kgha))+
+  geom_bar(stat = "identity", position = position_dodge())+ 
+  facet_wrap(~ Protection, scales="free_x")+
+  labs(y = expression(paste("Biomass (kg ", ha^-1,")")))+
+  scale_y_continuous(limits = c (0, 17), expand = c(0,0))+
+  geom_errorbar(aes(ymin=ifelse(Biomass.sum.kgha - se < 0,0, Biomass.sum.kgha-(1*se)), ymax=Biomass.sum.kgha+(1*se)), width=.2, position=position_dodge(.9))+
+  geom_text(data = db.2Obl.loc, aes(x=Location, y = Biomass.sum.kgha + (1*se), label = siglet.loc), 
+            vjust= -0.8, hjust = 0.5, size = 5, fontface = "bold", position=position_dodge(.9))+
+  scale_x_discrete(expand = c(0, 0.7))+
+  theme_economist()+scale_colour_economist()+
+  theme(
+    panel.margin.y = unit(0, "cm"),
+    strip.text.x = element_text(size = 14, face = "bold", vjust = 2, margin = margin(0.2, 0, 0.1, 0, "cm")),
+    strip.background = element_blank(),
+    axis.title.x = element_text(color="black", vjust=-2, size = 14),
+    axis.text.x = element_text(angle = 0, size=12, face = "bold", vjust=0.5),
+    axis.title.y = element_text(color="black" , vjust=4, size = 14),
+    axis.text.y=element_text(size=12, face = "bold", vjust=0.4),
+    plot.margin = margin(t = 10, r = 40,  b = 25,  l = 20),
+    panel.background = element_rect(fill = "#FCFCFC"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    panel.grid.major = element_line(colour = "#797979", size = 0.3),
+    axis.ticks = element_blank()
+    )
+#ggsave("Biomass_Obligate.tiff", width = 23, height = 11, units = "cm", dpi=1200, compression = "lzw")
+
+## Stacked bar Obligate corallivores
+ggplot(db.2Obl.sum, aes(fill=Location, y=Biomass.kgha, x=reorder(Species, -Biomass.tot))) + 
+    geom_bar(position="stack", stat="identity")+
+    scale_fill_manual(values = c("#b3dcff", "#90b2ce", "#ffd989", "#ceaf6e", "#e06060", "#b44d4d"))+
+    labs(y = expression(paste("Biomass (kg ", ha^-1,")")), x = "Species", fill = "Study site")+
+    theme_economist()+
+    theme(
+      axis.title.x = element_text(color="black", vjust=-2, size = 14),
+      axis.text.x=element_text(size=12, face = "bold.italic", vjust=0.5, angle = -35, hjust=0),
+      axis.title.y = element_text(color="black" , vjust=4, size = 14),
+      axis.text.y=element_text(size=12, face = "bold", vjust=0.5),
+      plot.margin = unit(c(0.5,3.5,0.5,0.5), "cm"),
+      panel.background = element_rect(fill = "#FCFCFC"),
+      plot.background = element_rect(fill = "#FFFFFF"),
+      panel.grid.major = element_line(colour = "#797979", size = 0.3)
+      )
+ggsave("Obligate corallivores.tiff", width = 23, height = 10, units = "cm", dpi=1200, compression = "lzw")
+
+```
+
+# Save summary data to Excel for correlations
+```{r corexcel}
+
+db.2Fac.xs <- select(db.2Fac.loc, c('Protection', 'Location', 'Biomass.sum.kgha', 'n', 'se', 'siglet.loc'))
+write_xlsx(db.2Fac.xs, "Correlation data/Correlations_FacFish.xlsx")
+
+db.2Obl.xs <- select(db.2Obl.loc, c('Protection', 'Location', 'Biomass.sum.kgha', 'n', 'se', 'siglet.loc'))
+write_xlsx(db.2Obl.xs, "Correlation data/Correlations_OblFish.xlsx")
+
+```
+
+# Check packages used
+```{r}
+
+knitr::purl("fishspecies.Rmd")
+list.functions.in.file("fishspecies.R")
+unlink("fishspecies.R")
+
+```
