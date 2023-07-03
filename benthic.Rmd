@@ -331,7 +331,7 @@ HC.SE <- ggplot(df3.HC.sum) +
             vjust= -0.8, hjust = 0.5, size = 5, fontface = "bold", position=position_dodge(.9))+
   geom_bar(data=df3.HC.sum[(df3.HC.sum$Genus=="Porites"),],
            stat = "identity", aes(x = Location, y = Cover.tot, fill=Genus), alpha=0, size=1, color="black")+
-  scale_fill_manual("Genus", values = c("#FF930B", "#FFFF6F", "#EA4700", "#25006A", "#3D01AC", "#1575DE", "#26B3DE", "#49E9EA", "#2EE27C", "#78FF7D", "#CCFFA3", "#D4D4D4"))+
+  scale_fill_manual("Genus", values = c("#FF930B", "#FFFF6F", "#EA4700", "#1D0152", "#4400C1", "#228CFF", "#26CADE", "#A0FEFF", "#15A754", "#72FC78", "#D9F3A1", "#D4D4D4"))+
   facet_wrap(~ Protection, scales="free_x")+
   theme_economist()+scale_colour_economist()+
   labs(y = "Hard coral cover (%)", x = "Study site")+

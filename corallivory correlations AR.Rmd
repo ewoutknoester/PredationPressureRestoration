@@ -396,14 +396,15 @@ figure <- ggarrange( gg.bm, gg.cond,
 # BITEMARKS - CONDITION - FACFISH
 
 ## FACFISH - BITEMARKS
-FF.BM <- ggplot(Cor.fig, aes(x = Facfish.kgha, y = Bitemarks.m2, fill = Species)) + 
+FF.BM <- ggplot(Cor.fig, aes(x = Facfish.kgha, y = Bitemarks.m2, fill = Species, shape = Species)) + 
   geom_errorbar(aes(ymin=Bitemarks.m2-BM.se, ymax=Bitemarks.m2+BM.se), size =0.5, colour = "black", width=0)+
   geom_errorbar(aes(xmin=Facfish.kgha-FF.se, xmax=Facfish.kgha+FF.se), size =0.5, colour = "black", width=0)+
   scale_x_continuous(expression(paste("Facultative fish (kg ", ha^-1,")")), label = waiver (), limits = c (0, 440), breaks = c(0, 200, 400))+
   scale_y_continuous(expression(paste("Bite marks (", m^-2,")")), limits = c(0, 3400), label = waiver ())+
-  geom_point(aes(fill=Species), colour = "black", shape = 21, size =3, stroke = 1.25) +
+  geom_point(size =3, stroke = 1.25) +
   geom_smooth(aes(colour=Species, linetype=Species), method="lm", se=FALSE, size = 1.75, fullrange=FALSE)+
   scale_linetype_manual(values=c("dashed", "solid", "solid"))+
+  scale_shape_manual(values = c(21, 22, 24))+
   scale_fill_manual(values = c("#FF930B", "#AF00B2", "#DCE215"))+
   scale_colour_manual(values = c("#FF930B", "#AF00B2", "#DCE215"))+
    theme(
@@ -427,14 +428,15 @@ FF.BM <- ggplot(Cor.fig, aes(x = Facfish.kgha, y = Bitemarks.m2, fill = Species)
     annotate("text", x = 350, y = 3000, label = cors.all$sum[cors.all$ID == "PorXBitemarks.m2XFacfish.kgha"], size = 5, colour = "#DCE215")
 
 ## BITEMARKS - CONDITION
-BM.C <- ggplot(Cor.fig, aes(x = Bitemarks.m2, y = Condition, fill = Species)) + 
+BM.C <- ggplot(Cor.fig, aes(x = Bitemarks.m2, y = Condition, fill = Species, shape = Species)) + 
   geom_errorbar(aes(ymin=Condition-C.se, ymax=Condition+C.se), size =0.5, colour = "black", width=0)+
   geom_errorbar(aes(xmin=Bitemarks.m2-BM.se, xmax=Bitemarks.m2+BM.se), size =0.5, colour = "black", width=0)+
   scale_x_continuous(expression(paste("Bite marks (", m^-2,")")), label = waiver (), limits = c (0, 3400))+
   scale_y_continuous("Live coral tissue (%)", limits = c(0, 110), breaks = c(0, 50, 100), label = waiver ())+
-  geom_point(aes(fill=Species), colour = "black", shape = 21, size =3, stroke = 1.25) +
+  geom_point(size =3, stroke = 1.25) +
   geom_smooth(aes(colour=Species, linetype=Species), method="lm", se=FALSE, size = 1.75, fullrange=FALSE)+
   scale_linetype_manual(values=c("dashed", "solid", "dashed"))+
+  scale_shape_manual(values = c(21, 22, 24))+
   scale_fill_manual(values = c("#FF930B", "#AF00B2", "#DCE215"))+
   scale_colour_manual(values = c("#FF930B", "#AF00B2", "#DCE215"))+
    theme(
@@ -466,7 +468,6 @@ figure2 <- ggarrange(BM.C, FF.BM,
                     legend="bottom")
   ggsave("Corallivory correlations AR_Bitemarks and Condition AR.tiff", figure2, width = 21, height = 11, units = "cm", dpi=1200, compression = "lzw")
 
- 
 
 ```
 

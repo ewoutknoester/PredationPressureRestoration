@@ -165,37 +165,55 @@ df2.in.dru$Density  <- df2.in.dru$Abundance / 20
 ## Coralliophila
 df2.in.cor <- merge(df2.in.cor, df2.hc.sur, by = 'Survey')
 df2.in.cor$cor.m2coral <- df2.in.cor$Density / (df2.in.cor$Coral.cover/ 100)
-df2.in.cor <- select(df2.in.cor, c('Survey', 'Protection.x', 'Location.x', 'cor.m2coral'))
+df2.in.cor <- select(df2.in.cor, c('Survey', 'Protection.x', 'Location.x', 'Density', 'cor.m2coral'))
 colnames(df2.in.cor)[which(names(df2.in.cor) == "Protection.x")] <- "Protection"
 colnames(df2.in.cor)[which(names(df2.in.cor) == "Location.x")] <- "Location"
 
 ## Drupella
 df2.in.dru <- merge(df2.in.dru, df2.hc.sur, by = 'Survey')
 df2.in.dru$dru.m2coral <- df2.in.dru$Density / (df2.in.dru$Coral.cover/ 100)
-df2.in.dru <- select(df2.in.dru, c('Survey', 'Protection.x', 'Location.x', 'dru.m2coral'))
+df2.in.dru <- select(df2.in.dru, c('Survey', 'Protection.x', 'Location.x', 'Density', 'dru.m2coral'))
 colnames(df2.in.dru)[which(names(df2.in.dru) == "Protection.x")] <- "Protection"
 colnames(df2.in.dru)[which(names(df2.in.dru) == "Location.x")] <- "Location"
 
 # Both snails
 df2.in.snails <- merge(df2.in.cor, df2.in.dru, by = 'Survey')
 df2.in.snails$Snails.m2coral <- df2.in.snails$cor.m2coral + df2.in.snails$dru.m2coral
+df2.in.snails$Density <- df2.in.snails$Density.x + df2.in.snails$Density.y
 colnames(df2.in.snails)[which(names(df2.in.snails) == "Protection.x")] <- "Protection"
 colnames(df2.in.snails)[which(names(df2.in.snails) == "Location.x")] <- "Location"
 
 # Average per location
+## Density per sq m coral (i.e. proxy for predation pressure)
 df2.in.snails.loc <- data_summary(df2.in.snails, varname = "Snails.m2coral", groupnames = c("Protection","Location"))
 df2.in.snails.loc$Protection <- factor(df2.in.snails.loc$Protection, ordered = TRUE, levels = c("Fished", "Reserve", "No-take"))
 
+## Density per sq m coral (i.e. standard representation)
+df2.in.snails.loc.dens <- data_summary(df2.in.snails, varname = "Density", groupnames = c("Protection","Location"))
+df2.in.snails.loc.dens$Protection <- factor(df2.in.snails.loc.dens$Protection, ordered = TRUE, levels = c("Fished", "Reserve", "No-take"))
+
 # Split for stacked bar graph
-## Wide to long
+## Density per sq m coral
+### Wide to long
 df2.in.snails.stack <- select(df2.in.snails, c('Survey', 'Protection', 'Location', 'cor.m2coral', 'dru.m2coral'))
 df2.in.snails.stack <- gather(df2.in.snails.stack, Species, Density, cor.m2coral:dru.m2coral, factor_key=TRUE)
 
-# Set names
+### Set names
 levels(df2.in.snails.stack$Species) <- c("Coralliophila", "Drupella")
 
 df2.in.snails.stack.loc <- data_summary(df2.in.snails.stack, varname = "Density", groupnames = c("Protection", "Location", "Species"))
 df2.in.snails.stack.loc$Protection <- factor(df2.in.snails.stack.loc$Protection, ordered = TRUE, levels = c("Fished", "Reserve", "No-take"))
+
+## Density per sq m
+### Wide to long
+df2.in.snails.stack.dens <- select(df2.in.snails, c('Survey', 'Protection', 'Location', 'Density.x', 'Density.y'))
+df2.in.snails.stack.dens <- gather(df2.in.snails.stack.dens, Species, Density, Density.x:Density.y, factor_key=TRUE)
+
+### Set names
+levels(df2.in.snails.stack.dens$Species) <- c("Coralliophila", "Drupella")
+
+df2.in.snails.stack.loc.dens <- data_summary(df2.in.snails.stack.dens, varname = "Density", groupnames = c("Protection", "Location", "Species"))
+df2.in.snails.stack.loc.dens$Protection <- factor(df2.in.snails.stack.loc.dens$Protection, ordered = TRUE, levels = c("Fished", "Reserve", "No-take"))
 
 # --- STAR DENSITIES ---
 df2.in.cots <- subset(df1.in, Species == "Acanthaster") # Select COTS
@@ -214,20 +232,33 @@ df2.in.cul.loc <- data_summary(df2.in.cul, varname = "Density", groupnames = c("
 # Model
 ```{r model}
 
-# Simple model
+# Density per sq m coral
+## Simple model
 snails1  <- gls(Snails.m2coral ~ Location, data = df2.in.snails)
 
-# Allowing for heterogeneity among Locations improves residuals
+## Allowing for heterogeneity among Locations improves residuals
 snails1.w  <- gls(Snails.m2coral ~ Location, weights = varIdent(form = ~ 1|Location), data = df2.in.snails)
 
-# Output
+## Output
 car::Anova(snails1.w)
+
+# Density per sq m
+## Simple model
+snails1.dens  <- gls(Density ~ Location, data = df2.in.snails)
+
+## Allowing for heterogeneity among Locations improves residuals
+snails1.dens.w  <- gls(Density ~ Location, weights = varIdent(form = ~ 1|Location), data = df2.in.snails)
+
+## Output
+car::Anova(snails1.dens.w)
+
 
 ```
 
 # Model validation
 ```{r model validation}
 
+# Snail density (per sq m coral)
 mod <- snails1.w # set model to be validated
 op <- par(mfrow = c(2, 3), mar = c(5, 4, 1, 2)) # set layout of figure frame
 plot(resid(mod, type = "pearson") ~ fitted(mod)) # fitted vs residuals
@@ -239,6 +270,19 @@ abline(0,0)
 plot(fitted(mod) ~ df2.in.snails$Snails.m2coral) # response data vs fitted
 par(op)
 
+# Snail density (per sq m)
+mod <- snails1.dens.w # set model to be validated
+op <- par(mfrow = c(2, 3), mar = c(5, 4, 1, 2)) # set layout of figure frame
+plot(resid(mod, type = "pearson") ~ fitted(mod)) # fitted vs residuals
+abline(0,0)
+hist(resid(mod, type = "pearson"), main = "") # histogram residuals
+qqnorm(resid(mod, type = "pearson")) # QQplot residuals
+plot(df2.in.snails$Location, resid(mod, type = "pearson")) # residuals split over Date
+abline(0,0)
+plot(fitted(mod) ~ df2.in.snails$Density) # response data vs fitted
+par(op)
+
+
 ```
 
 # Post hoc
@@ -246,12 +290,15 @@ par(op)
 
 hsd <- emmeans(snails1.w, specs = pairwise ~ Location, adjust = "tukey", type = "response")
 
+hsd.dens <- emmeans(snails1.dens.w, specs = pairwise ~ Location, adjust = "tukey", type = "response")
+
 ```
 
 
 # Plotting
 ```{r plotting}
 
+# SNAIL DENSITY PER SQUARE METER OF CORAL
 # By Study Location
 ## Post hoc letters
 sigletters <- multcomp::cld(hsd$emmeans, alpha = 0.05, Letters = letters, reversed = FALSE) # get CLD
@@ -311,12 +358,80 @@ ggplot(df2.in.snails.stack.loc, aes(fill= forcats::fct_rev(Species), y=Density, 
       )
 ggsave("Inverspecies_Snails.tiff", width = 23, height = 10, units = "cm", dpi=1200, compression = "lzw")
 
+# SNAIL DENSITY PER SQUARE METER
+# By Study Location
+## Post hoc letters
+sigletters.dens <- multcomp::cld(hsd.dens$emmeans, alpha = 0.05, Letters = letters, reversed = FALSE) # get CLD
+sigletters.dens <- sigletters.dens %>% dplyr::mutate(.group = str_squish(.group)) # remove white spaces
+
+## Merge sig.letter dataframe into the summary dataframe
+sigletters.dens <- sigletters.dens[order(sigletters.dens$Location),] # Make order match with summary dataframe
+df2.in.snails.loc.dens <- df2.in.snails.loc.dens[order(df2.in.snails.loc.dens$Location),] # Make order match
+df2.in.snails.loc.dens <- cbind(df2.in.snails.loc.dens, siglet.loc = sigletters.dens$.group)
+
+## Plot
+ggplot(df2.in.snails.loc.dens, aes(x = Location, y = Density))+
+  geom_bar(stat = "identity", position = position_dodge())+ 
+  facet_wrap(~ Protection, scales="free_x")+
+  labs(y = expression(paste("Snail density (", m^-2, ")")), x = "Study site")+
+  scale_y_continuous(limits = c (0, 2), breaks = c(0, 1, 2), expand = c(0,0))+
+  geom_errorbar(aes(ymin=ifelse(Density - se < 0,0, Density-(1*se)), ymax=Density+(1*se)), width=.2, position=position_dodge(.9))+
+  geom_text(data = df2.in.snails.loc.dens, aes(x=Location, y = Density + (1*se), label = siglet.loc), 
+            vjust= -0.8, hjust = 0.5, size = 5, fontface = "bold", position=position_dodge(.9))+
+  scale_x_discrete(expand = c(0, 0.7))+
+  theme_economist()+scale_colour_economist()+
+  theme(
+    panel.margin.y = unit(0, "cm"),
+    strip.text.x = element_text(size = 14, face = "bold", vjust = 2, margin = margin(0.2, 0, 0.1, 0, "cm")),
+    strip.background = element_blank(),
+    axis.title.x = element_text(color="black", vjust=-2, size = 14),
+    axis.text.x = element_text(angle = 0, size=12, face = "bold", vjust=0.5),
+    axis.title.y = element_text(color="black" , vjust=4, size = 14),
+    axis.text.y=element_text(size=12, face = "bold", vjust=0.4),
+    plot.margin = margin(t = 10, r = 40,  b = 25,  l = 20),
+    panel.background = element_rect(fill = "#FCFCFC"),
+    plot.background = element_rect(fill = "#FFFFFF"),
+    panel.grid.major = element_line(colour = "#797979", size = 0.3),
+    axis.ticks = element_blank()
+    )
+#ggsave("Snails x Location_dens.tiff", width = 23, height = 11, units = "cm", dpi=1200, compression = "lzw")
+
+# Stacked bar both corallivorous snails
+ggplot(df2.in.snails.stack.loc.dens, aes(fill= forcats::fct_rev(Species), y=Density, x=Location)) + 
+    geom_bar(position="stack", stat="identity")+
+    facet_wrap(~ Protection, scales="free_x")+
+    scale_y_continuous(limits = c (0, 1.5))+
+    scale_fill_manual(values = c( "#999999", "#323232"))+
+    labs(y = expression(paste("Snail density ( ", m^-2,")")), x = "Study site", fill = "Genus")+
+    theme_economist()+
+    theme(
+      strip.text.x = element_text(size = 14, face = "bold", vjust = 2, margin = margin(0.2, 0, 0.1, 0, "cm")),
+      panel.margin.y = unit(0, "cm"),
+      axis.title.x = element_text(color="black", vjust=-2, size = 14),
+      axis.text.x=element_text(size=12, face = "bold", vjust=0.5, hjust=0),
+      axis.title.y = element_text(color="black" , vjust=4, size = 14),
+      axis.text.y=element_text(size=12, face = "bold", vjust=0.5),
+      legend.text = element_text(size = 14, face = "bold.italic"),
+      panel.background = element_rect(fill = "#FCFCFC"),
+      plot.background = element_rect(fill = "#FFFFFF"),
+      panel.grid.major = element_line(colour = "#797979", size = 0.3)
+      )
+ggsave("Inverspecies_Snails_dens.tiff", width = 23, height = 10, units = "cm", dpi=1200, compression = "lzw")
+
+
 ```
 
 # Save summary data to Excel for correlations
 ```{r corexcel}
 
 df2.in.snails.loc.excel <- select(df2.in.snails.loc, -c('sum', 'sd'))
+df2.in.snails.loc.dens.excel <- select(df2.in.snails.loc.dens, -c('Protection', 'sum', 'sd'))
+colnames(df2.in.snails.loc.dens.excel)[which(names(df2.in.snails.loc.dens.excel) == "n")] <- "n_dens"
+colnames(df2.in.snails.loc.dens.excel)[which(names(df2.in.snails.loc.dens.excel) == "se")] <- "se_dens"
+colnames(df2.in.snails.loc.dens.excel)[which(names(df2.in.snails.loc.dens.excel) == "siglet.loc")] <- "siglet.loc_dens"
+
+df2.in.snails.loc.excel <- left_join(df2.in.snails.loc.excel, df2.in.snails.loc.dens.excel, by = "Location")
+
 write_xlsx(df2.in.snails.loc.excel,"Correlation data/Correlations_Snails.xlsx")
 
 ```
